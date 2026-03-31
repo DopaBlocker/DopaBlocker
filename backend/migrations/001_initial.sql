@@ -1,0 +1,6 @@
+-- Schema SQL inicial do DopaBlocker.
+-- Implementar tabelas: users (id, firebase_uid, email, display_name, mode, created_at),
+-- devices (id, user_id, device_name, platform, is_child, created_at),
+-- blocked_items (id, user_id, item_type, value, is_active, created_at),
+-- parental_links (id, parent_device_id, child_device_id, link_code, status, created_at),
+-- adult_filter_settings (id, user_id, is_enabled, last_list_update).

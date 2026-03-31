@@ -1,0 +1,29 @@
+// Regras de segurança do Firestore para DopaBlocker.
+// Implementar: regras granulares para cada collection:
+// - users/{userId}: leitura/escrita apenas pelo próprio usuário
+// - devices/{deviceId}: leitura/escrita pelo dono do dispositivo
+// - blocked_items/{itemId}: leitura/escrita pelo dono
+// - parental_links/{linkId}: leitura pelo pai ou filho vinculado,
+//   escrita apenas pelo pai (para criar/remover links)
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    match /devices/{deviceId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /blocked_items/{itemId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /parental_links/{linkId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+  }
+}

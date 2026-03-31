@@ -1,0 +1,17 @@
+# Docker Compose para desenvolvimento local.
+# Sobe o backend Rust e expõe na porta 3000.
+# Volume persistente para o SQLite.
+
+services:
+  backend:
+    build: ../backend
+    ports:
+      - "3000:3000"
+    env_file:
+      - ../backend/.env
+    volumes:
+      - backend-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  backend-data:
