@@ -23,9 +23,18 @@ Monorepo com 4 sub-projetos: backend, desktop, mobile e shared.
 - **Accessibility Service**: detecta e bloqueia abertura de apps
 - **Boot Receiver**: reinicia VPN automaticamente apos reboot
 
+## Armazenamento Local (SQLCipher)
+
+- **SQLCipher** em vez de SQLite puro — criptografia AES-256 transparente no banco local
+- Cada dispositivo tem um banco .db criptografado que serve como cache offline
+- Sem a chave (PRAGMA key), o arquivo e ilegivel — protege contra acesso fisico ao disco
+- Backend (Rust): `rusqlite` com feature `bundled-sqlcipher`
+- Desktop (Tauri): mesmo `rusqlite` com `bundled-sqlcipher`
+- Mobile (Flutter): `sqflite_sqlcipher` (drop-in replacement do sqflite)
+
 ## Sincronizacao
 
-- SQLite local como cache offline em cada dispositivo
+- SQLCipher local como cache offline criptografado em cada dispositivo
 - Firestore como fonte de verdade para sincronizacao cross-device
 - Backend API como intermediario para validacao e logica de negocios
 

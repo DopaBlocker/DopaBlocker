@@ -1,7 +1,7 @@
 // Builder do app Tauri com registro de comandos IPC.
 // Implementar: registrar todos os comandos (get_blocklist, toggle_blocking,
 // add_blocked_item, remove_blocked_item, link_device, get_devices, toggle_adult_filter),
-// inicializar o SQLite local e o engine de bloqueio (WFP + DNS proxy).
+// inicializar o SQLCipher local (db::init_db + PRAGMA key) e o engine de bloqueio (WFP + DNS proxy).
 
 mod commands;
 mod db;
