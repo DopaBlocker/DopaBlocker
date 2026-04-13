@@ -1,46 +1,157 @@
-# DopaBlocker - Arquitetura
+# DopaBlocker — Arquitetura
 
-## Visao Geral
+## Visão Geral
 
 Monorepo com 4 sub-projetos: backend, desktop, mobile e shared.
 
 ## Fluxo de Dados
 
 ```
-[Mobile App (Flutter)] --HTTP/JWT--> [Backend API (Axum)] --Firestore--> [Firebase Cloud]
-[Desktop App (Tauri)]  --HTTP/JWT--> [Backend API (Axum)] --Firestore--> [Firebase Cloud]
+[Mobile App (Flutter)] --HTTP/JWT ou dt_--> [Backend API (Axum)] --Firestore--> [Firebase Cloud]
+[Desktop App (Tauri)]  --HTTP/JWT ou dt_--> [Backend API (Axum)] --Firestore--> [Firebase Cloud]
 ```
 
-## Tecnicas de Bloqueio
+O backend aceita dois tipos de token no header `Authorization` (ver "Autenticação dual" abaixo). Todas as outras camadas funcionam de forma idêntica independentemente do tipo de token.
+
+---
+
+## Fluxo de Onboarding
+
+Ao abrir o app pela primeira vez, o usuário vê **três opções** e cada uma dispara um fluxo distinto:
+
+```
+                 ┌──────────────────────┐
+                 │ Tela inicial         │
+                 │  [Pessoal] [Pais]    │
+                 │       [Filhos]       │
+                 └──┬──────┬────────┬───┘
+                    │      │        │
+          ┌─────────┘      │        └────────┐
+          │                │                 │
+          v                v                 v
+    ┌──────────┐     ┌──────────┐    ┌──────────────┐
+    │ Pessoal  │     │   Pais   │    │    Filhos    │
+    └────┬─────┘     └────┬─────┘    └──────┬───────┘
+         │                │                 │
+         v                v                 v
+   ┌────────────┐  ┌────────────┐   ┌────────────────┐
+   │ Cadastro   │  │ Cadastro   │   │ Input 6 díg.   │
+   │ Firebase   │  │ Firebase   │   │ (sem cadastro) │
+   └─────┬──────┘  └─────┬──────┘   └────────┬───────┘
+         │               │                   │
+         v               v                   v
+  ┌────────────┐ ┌────────────────┐ ┌─────────────────┐
+  │ User       │ │ User           │ │ Só cria Device  │
+  │ mode=      │ │ mode=          │ │ sob user_id do  │
+  │ personal   │ │ parental       │ │ pai c/ is_child │
+  │ Device     │ │ Device         │ │ = 1             │
+  │ is_child=0 │ │ is_child=0     │ │                 │
+  └─────┬──────┘ └───────┬────────┘ └────────┬────────┘
+        │                │                   │
+        v                v                   v
+  ┌────────────┐ ┌────────────────┐ ┌─────────────────┐
+  │ Firebase   │ │ Firebase JWT + │ │ Device Token    │
+  │ JWT        │ │ Gera códigos   │ │ (dt_xxx)        │
+  └────────────┘ └────────────────┘ └─────────────────┘
+```
+
+**Detalhes de cada opção** estão documentados em [PROTOTYPE.md](PROTOTYPE.md) → "Fluxo de Onboarding".
+
+---
+
+## Autenticação dual
+
+O backend aceita **dois tipos** de token no header `Authorization`. O middleware inspeciona o prefixo para decidir qual caminho seguir:
+
+### Firebase JWT (contas Pessoal e Pais)
+
+```
+Authorization: Bearer eyJhbGci...   ← sem prefixo "dt_"
+```
+
+- O frontend (Svelte ou Flutter) faz login no Firebase Auth (email/senha ou Google).
+- Firebase retorna um JWT assinado pelas chaves públicas do Google.
+- O backend valida a assinatura, o issuer, o audience e a expiração.
+- Resolve o `user_id` local via `firebase_uid` na tabela `users`.
+
+### Device Token (devices filhos, sem conta Firebase)
+
+```
+Authorization: Bearer dt_a1b2c3d4...   ← prefixo "dt_"
+```
+
+- Gerado uma única vez pelo backend ao confirmar o código de vinculação (`POST /devices/link/confirm`, rota pública).
+- Salvo na tabela `device_tokens` como **hash** (SHA-256), não em plain text.
+- Validado em cada requisição: lookup pelo hash, verificar que `revoked_at IS NULL`, resolver o `user_id` e o `device_id`.
+- Escopo **read-only**: rotas de escrita (POST/DELETE/PUT em blocklist, gerar código) são proibidas para device tokens e retornam 403.
+
+### Middleware
+
+O middleware extrai o header `Authorization`, inspeciona o prefixo, e chama a validação correta. Ambos os caminhos resolvem para um `AuthUser { user_id, source }`, onde `source` indica qual tipo de token foi usado. Handlers que precisam diferenciar (ex: "só pai pode adicionar à blocklist") checam o `source`.
+
+---
+
+## Técnicas de Bloqueio
 
 ### Windows (Desktop)
-- **WFP (Windows Filtering Platform)**: filtros de rede a nivel de kernel
-- **DNS Proxy**: resolver local que retorna NXDOMAIN para dominios bloqueados
-- **Bloom Filter**: lookup rapido de dominios adultos (Steven Black / OISD)
+- **WFP (Windows Filtering Platform)**: filtros de rede a nível de kernel
+- **DNS Proxy**: resolver local que retorna NXDOMAIN para domínios bloqueados
+- **Bloom Filter**: lookup rápido de domínios adultos (Steven Black / OISD)
 
 ### Android (Mobile)
-- **VPN Service**: intercepta trafego DNS via TUN interface
+- **VPN Service**: intercepta tráfego DNS via TUN interface
 - **Accessibility Service**: detecta e bloqueia abertura de apps
-- **Boot Receiver**: reinicia VPN automaticamente apos reboot
+- **Boot Receiver**: reinicia VPN automaticamente após reboot
+
+### Regra do "Pai imune"
+
+Em ambas as plataformas, o blocking engine consulta o modo do user e o papel do device **antes** de popular a lista de domínios a bloquear:
+
+```
+se user.mode == 'personal':
+    aplica todos os blocked_items da conta
+senão se user.mode == 'parental':
+    se device.is_child == true:
+        aplica todos os blocked_items da conta
+    senão (device do pai):
+        NÃO aplica nada (lista vazia)
+```
+
+Consequência: no device do pai em modo parental, o DNS Proxy e o VPN Service permanecem ativos mas com blocklist vazia — deixando passar todo o tráfego. A blocklist é aplicada **apenas nos devices filhos**.
+
+---
 
 ## Armazenamento Local (SQLCipher)
 
 - **SQLCipher** em vez de SQLite puro — criptografia AES-256 transparente no banco local
-- Cada dispositivo tem um banco .db criptografado que serve como cache offline
-- Sem a chave (PRAGMA key), o arquivo e ilegivel — protege contra acesso fisico ao disco
+- Cada dispositivo tem um banco `.db` criptografado que serve como cache offline
+- Sem a chave (`PRAGMA key`), o arquivo é ilegível — protege contra acesso físico ao disco
 - Backend (Rust): `rusqlite` com feature `bundled-sqlcipher`
 - Desktop (Tauri): mesmo `rusqlite` com `bundled-sqlcipher`
-- Mobile (Flutter): `sqflite_sqlcipher` (drop-in replacement do sqflite)
+- Mobile (Flutter): `sqflite_sqlcipher` (drop-in replacement do `sqflite`)
 
-## Sincronizacao
+### Tabelas principais
+- `users`, `devices`, `blocked_items`, `parental_links`, `adult_filter_settings` (migration `001_initial.sql`)
+- `device_tokens` (migration `002_parental_fixes.sql`) — tokens de acesso dos devices filhos
+
+No device do filho, o backend não é consultado para auth (o device token é local). Mas as chamadas à API (blocklist, devices) continuam passando pelo backend normalmente, usando o device token como credencial.
+
+---
+
+## Sincronização
 
 - SQLCipher local como cache offline criptografado em cada dispositivo
-- Firestore como fonte de verdade para sincronizacao cross-device
-- Backend API como intermediario para validacao e logica de negocios
+- Firestore como fonte de verdade para sincronização cross-device
+- Backend API como intermediário para validação e lógica de negócios
+- Polling a cada 30 segundos no v0.1 (listeners real-time do Firestore ficam para v0.2)
+
+---
 
 ## Controle Parental
 
-- Uma conta, multiplos dispositivos (pai + filhos)
-- Vinculacao via codigo 6 digitos com TTL de 5 minutos
-- Pai gerencia blocklist que propaga para dispositivos filhos
-- Nao requer app separado nem conta separada
+- **Uma conta, múltiplos dispositivos** (pai + filhos vinculados)
+- **Vinculação via código de 6 dígitos** com TTL de 5 minutos
+- Pai gerencia a blocklist que propaga para os dispositivos filhos
+- **Filho não cria conta** — usa device token gerado no momento da vinculação
+- **Pai fica imune** aos próprios blocks (ver "Regra do Pai imune" acima)
+- Única blocklist compartilhada entre todos os filhos de uma conta (limitação do v0.1)

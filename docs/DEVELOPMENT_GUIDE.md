@@ -131,11 +131,30 @@ chrono = { version = "0.4", features = ["serde"] }
 
 - `users`: id TEXT PK, firebase_uid TEXT UNIQUE, email TEXT UNIQUE, display_name TEXT, mode TEXT default 'personal', created_at TEXT default datetime('now')
 - `devices`: id TEXT PK, user_id TEXT FK, device_name TEXT, platform TEXT, is_child INTEGER default 0, created_at TEXT
-- `blocked_items`: id TEXT PK, user_id TEXT FK, item_type TEXT CHECK('site','app'), value TEXT, is_active INTEGER default 1, created_at TEXT
+- `blocked_items`: id TEXT PK, user_id TEXT FK, item_type TEXT CHECK('domain','app','keyword'), value TEXT, is_active INTEGER default 1, created_at TEXT
 - `parental_links`: id TEXT PK, parent_device_id TEXT FK, child_device_id TEXT FK nullable, link_code TEXT, status TEXT default 'pending', expires_at TEXT, created_at TEXT
 - `adult_filter_settings`: id TEXT PK, user_id TEXT UNIQUE FK, is_enabled INTEGER default 0, last_list_update TEXT
 
 O `child_device_id` começa como NULL porque, quando o pai gera o código, ainda não se sabe qual dispositivo vai usar esse código. Ele só é preenchido quando o filho confirma a vinculação.
+
+**migrations/002_parental_fixes.sql** — Ajustes pós-001 que suportam o fluxo "Filhos sem conta" e fecham gaps de performance/segurança:
+
+- **Novo índice** `idx_parental_links_parent` em `parental_links(parent_device_id)` — queries do tipo "listar filhos deste pai" precisam disso para não fazer full table scan.
+- **Índice unique parcial** `idx_parental_links_code_active` em `parental_links(link_code) WHERE status = 'pending'` — impede que dois pais tenham simultaneamente o mesmo código pendente (risco de o filho vincular ao pai errado). SQLite suporta partial indexes desde a versão 3.8.
+- **Nova tabela `device_tokens`** — armazena os tokens de acesso dos devices filhos, que não têm conta Firebase:
+
+```sql
+CREATE TABLE IF NOT EXISTS device_tokens (
+    token_hash TEXT PRIMARY KEY,       -- SHA-256 do token, não plain text
+    device_id  TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    revoked_at TEXT  -- NULL = ativo
+);
+CREATE INDEX idx_device_tokens_device ON device_tokens(device_id);
+```
+
+Salvar apenas o **hash SHA-256** do token no banco, nunca o plain text. Se o arquivo `.db` vazar, os tokens hasheados são inúteis para um atacante.
 
 **main.rs** — O fluxo do main é sequencial e cada passo depende do anterior:
 
@@ -186,23 +205,65 @@ reqwest = { version = "0.12", features = ["json"] }
 
 ### Detalhamento
 
-**middleware.rs — Validação de Firebase JWT:**
+**middleware.rs — Validação dual (Firebase JWT OU Device Token):**
 
-O fluxo de autenticação funciona assim: o frontend (desktop ou mobile) faz login diretamente no Firebase Auth SDK — o backend **nunca** recebe a senha do usuário. O Firebase valida as credenciais e retorna um JWT (token assinado). O frontend envia esse JWT no header `Authorization: Bearer <token>` de toda requisição. O backend precisa verificar se esse token é legítimo e não foi adulterado.
+O backend aceita **dois tipos** de token no header `Authorization`:
 
-Para validar o JWT:
+| Tipo | Prefixo | Quem usa |
+|---|---|---|
+| Firebase JWT | (sem prefixo) | Contas Pessoal e Pais |
+| Device Token | `dt_` | Devices filhos, que não têm conta Firebase |
+
+O middleware inspeciona o começo do token e roteia para o validador correto:
+
+```
+se token começa com "dt_":
+    validar como Device Token
+senão:
+    validar como Firebase JWT
+```
+
+**Validação do Firebase JWT:**
+
+O fluxo é: o frontend (desktop ou mobile) faz login diretamente no Firebase Auth SDK — o backend **nunca** recebe a senha do usuário. O Firebase valida as credenciais e retorna um JWT (token assinado). O frontend envia esse JWT no header `Authorization: Bearer <token>` de toda requisição. Para validar:
 
 1. Buscar as chaves públicas do Google em `https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com`. Essas chaves mudam periodicamente, então precisam ser cacheadas e atualizadas.
 2. Decodificar o header do JWT (a primeira parte antes do ponto) para extrair o `kid` (Key ID) — isso indica qual chave pública foi usada para assinar este token específico.
 3. Encontrar a chave pública correspondente ao `kid` no cache.
 4. Validar a assinatura digital com `jsonwebtoken::decode()` usando essa chave.
 5. Verificar os claims: `iss` (issuer) deve ser `https://securetoken.google.com/<project_id>`, `aud` (audience) deve ser o project_id, `exp` (expiration) não deve estar expirado.
+6. Resolver o `user_id` local fazendo lookup na tabela `users` pelo `firebase_uid`.
 
-Se qualquer uma dessas verificações falhar, o token é inválido e a requisição deve retornar 401 Unauthorized.
+Se qualquer uma dessas verificações falhar, retornar 401 Unauthorized.
 
-Implementar como um Axum extractor: `AuthUser { uid: String, email: Option<String> }` que implementa o trait `FromRequestParts`. Quando um handler declara `AuthUser` como parâmetro, o Axum automaticamente executa a validação antes de chamar o handler. Se o token for inválido, o handler nem é executado.
+**Validação do Device Token:**
 
-Cache das chaves públicas: armazenar em `Arc<RwLock<HashMap<String, DecodingKey>>>` e atualizar quando expirar (o header `Cache-Control` da resposta do Google indica por quanto tempo a chave é válida, geralmente ~24h). Sem esse cache, cada requisição faria um HTTP request para o Google — inaceitável em termos de latência.
+1. Remover o prefixo `dt_` do header.
+2. Calcular o hash SHA-256 do valor restante.
+3. Fazer lookup em `device_tokens` por `token_hash = <hash>`.
+4. Verificar que `revoked_at IS NULL` (token não revogado).
+5. Resolver o `user_id` e o `device_id` a partir da linha retornada.
+
+Se qualquer um desses passos falhar, retornar 401 Unauthorized.
+
+**Extractor `AuthUser`:**
+
+```rust
+pub struct AuthUser {
+    pub user_id: String,           // sempre resolvido (seja via Firebase ou device token)
+    pub firebase_uid: Option<String>,  // None quando é device token
+    pub device_id: Option<String>,     // Some quando é device token
+    pub source: TokenSource,        // Firebase | DeviceToken
+}
+
+pub enum TokenSource { Firebase, DeviceToken }
+```
+
+Implementar como um Axum extractor: `AuthUser` que implementa o trait `FromRequestParts`. Quando um handler declara `AuthUser` como parâmetro, o Axum automaticamente executa a validação antes de chamar o handler. Se o token for inválido, o handler nem é executado.
+
+Handlers que precisam diferenciar (ex: impedir um device filho de modificar a blocklist) podem checar `source == TokenSource::Firebase` e retornar 403 caso contrário.
+
+**Cache das chaves públicas do Firebase:** armazenar em `Arc<RwLock<HashMap<String, DecodingKey>>>` e atualizar quando expirar (o header `Cache-Control` da resposta do Google indica por quanto tempo a chave é válida, geralmente ~24h). Sem esse cache, cada requisição faria um HTTP request para o Google — inaceitável em termos de latência.
 
 **services/auth_service.rs** — Funções que interagem com o banco para gerenciar usuários:
 
@@ -265,8 +326,15 @@ rand = "0.8"
 
 - `register_device(conn, user_id, device_name, platform)` — Cria um registro de device com UUID. Cada instalação do app chama essa função uma vez, na primeira inicialização. O `platform` é "windows" ou "android", usado para saber que tipo de bloqueio aplicar.
 - `get_user_devices(conn, user_id)` — Lista todos os dispositivos do usuário. No modo parental, o dispositivo-pai usa essa lista para mostrar quais filhos estão vinculados.
-- `generate_link_code(conn, device_id)` — Gera um código aleatório de 6 dígitos com `rand::thread_rng().gen_range(100000..=999999)`, salva em `parental_links` com status "pending" e `expires_at = now + 5 minutos`. O código de 6 dígitos é um compromisso entre segurança (1 milhão de combinações possíveis) e usabilidade (fácil de digitar). O TTL de 5 minutos limita a janela de ataque — após expirar, o código é inútil.
-- `confirm_link_code(conn, child_device_id, code)` — O dispositivo-filho envia o código digitado pelo usuário. A função busca em `parental_links` um registro com esse código, verifica que o status é "pending" e que `expires_at > now` (não expirou). Se válido, atualiza o `child_device_id` e muda o status para "active". Se o código não existe, já foi usado, ou expirou, retorna erro.
+- `generate_link_code(conn, parent_device_id)` — Gera um código aleatório de 6 dígitos com `rand::thread_rng().gen_range(100000..=999999)`, salva em `parental_links` com status "pending" e `expires_at = now + 5 minutos`. Antes de inserir, verificar se já existe um link pending com o mesmo código — se existir, regenerar. Combinado com o unique partial index da migration 002, isso elimina a chance de colisão.
+- `confirm_link_code(conn, code, device_name, platform)` — **Chamada pelo device do filho, sem autenticação**. A função:
+  1. Busca em `parental_links` um registro com `link_code = code`, `status = 'pending'` e `expires_at > now`. Se não achar, retorna erro 400.
+  2. Carrega o `parent_device_id` e resolve o `user_id` do pai via `devices`.
+  3. Cria um novo registro em `devices` com `user_id = <user_id do pai>`, `is_child = 1`, `device_name` e `platform` recebidos.
+  4. Atualiza o `parental_link` com `child_device_id = <novo device.id>` e `status = 'active'`.
+  5. Gera um token aleatório forte (ex: `Uuid::new_v4().to_string() + "_" + random_suffix`), calcula o SHA-256, e insere em `device_tokens(token_hash, device_id, user_id)`.
+  6. Retorna `{ device_token: "dt_<plain_token>", device_id, user_id, parent_device_id }` para o app do filho.
+- `revoke_device_token(conn, token_hash)` — Marca `revoked_at = now` no registro correspondente. Usado quando o pai desvincula um filho.
 
 **routes/blocklist.rs** — Todas as rotas são protegidas com o extractor `AuthUser`, ou seja, exigem JWT válido. O `user_id` vem do token, nunca do corpo da requisição (isso impede que um usuário se passe por outro):
 
@@ -275,12 +343,14 @@ rand = "0.8"
 - `DELETE /blocklist/:id` — Remove um item pelo `id`. O service verifica que o item pertence ao usuário.
 - `PUT /blocklist/adult-filter` — Liga/desliga o filtro de conteúdo adulto. Recebe `{ "enabled": true/false }`.
 
-**routes/devices.rs** — Também todas protegidas com `AuthUser`:
+**routes/devices.rs** — Três rotas protegidas e **uma pública**:
 
-- `POST /devices/register` — Registra o dispositivo. Recebe `device_name` e `platform`.
-- `GET /devices` — Lista os dispositivos do usuário (incluindo filhos vinculados).
-- `POST /devices/link/generate` — O dispositivo-pai solicita um código de vinculação. Retorna o código e o tempo de expiração.
-- `POST /devices/link/confirm` — O dispositivo-filho envia o código para confirmar a vinculação. Retorna sucesso ou erro.
+- `POST /devices/register` — Protegida (`AuthUser`). Registra o dispositivo. Recebe `device_name` e `platform`.
+- `GET /devices` — Protegida. Lista os dispositivos do usuário (incluindo filhos vinculados).
+- `POST /devices/link/generate` — Protegida. **Apenas Firebase JWT** (checar `source == Firebase` e retornar 403 caso contrário, impedindo que um device filho gere códigos). O dispositivo-pai solicita um código de vinculação. Retorna o código e o tempo de expiração.
+- `POST /devices/link/confirm` — **Pública**, sem `AuthUser`. Recebe `{ code, device_name, platform }`. Chama `confirm_link_code` no service. Retorna `{ device_token: "dt_...", device_id, user_id, parent_device_id }`. Se o código for inválido ou expirado, retorna 400.
+
+Importante ao montar o router: registrar `/devices/link/confirm` **fora** da camada de middleware de auth. No Axum, isso significa usar dois `Router`s diferentes e fazer `.merge()`: um com as rotas protegidas, outro com as públicas.
 
 ### Como testar
 
@@ -428,9 +498,21 @@ Para que o sistema use o DNS Proxy, é necessário alterar o DNS do adaptador de
 
 Struct `BlockingEngine` com `dns_proxy`, `adult_filter`, e `is_active`. Funções:
 
-- `start(blocklist, adult_filter_enabled)` — Sequência de inicialização: se `adult_filter_enabled` é true, carregar a lista (do cache ou URL); iniciar o DNS Proxy em uma task separada (tokio::spawn); configurar o sistema para usar o proxy como DNS; marcar `is_active = true`. Se algum passo falhar, desfazer os anteriores (rollback).
+- `start(user_mode, is_child_device, blocklist, adult_filter_enabled)` — Sequência de inicialização: se `adult_filter_enabled` é true, carregar a lista (do cache ou URL); aplicar a **regra do pai imune** (ver abaixo) para decidir qual blocklist repassar ao DNS Proxy; iniciar o DNS Proxy em uma task separada (tokio::spawn); configurar o sistema para usar o proxy como DNS; marcar `is_active = true`. Se algum passo falhar, desfazer os anteriores (rollback).
 - `stop()` — Sequência de desligamento: parar o DNS Proxy; restaurar o DNS original do sistema; marcar `is_active = false`. A restauração do DNS é crítica — se o app crashar sem restaurar, o usuário fica sem internet.
-- `update_rules(blocklist)` — Atualiza a blocklist no DNS Proxy sem precisar reiniciar o engine inteiro. Chamada quando o usuário adiciona/remove sites.
+- `update_rules(user_mode, is_child_device, blocklist)` — Atualiza a blocklist no DNS Proxy sem precisar reiniciar o engine inteiro. Aplica a mesma regra do pai imune antes de repassar.
+
+**Regra do pai imune** (aplicar em `start` e `update_rules`):
+
+```rust
+let effective_blocklist = match (user_mode, is_child_device) {
+    (BlockMode::Personal, _) => blocklist.clone(),
+    (BlockMode::Parental, true)  => blocklist.clone(),   // filho aplica
+    (BlockMode::Parental, false) => Vec::new(),          // pai imune — lista vazia
+};
+```
+
+No device do pai em modo parental, o DNS Proxy continua rodando (e redirecionando consultas), mas a lista de domínios a bloquear é vazia. Todo o tráfego passa. Isso garante que o pai não se autobloqueia. Se o pai quiser se autobloquear, precisa criar uma segunda conta em modo Pessoal.
 
 **blocking/wfp.rs** — Camada extra de segurança usando o Windows Filtering Platform. O DNS Proxy sozinho já bloqueia a maioria dos acessos, mas um usuário técnico poderia mudar o DNS do sistema manualmente para contornar o bloqueio. O WFP impede isso criando regras no firewall do Windows que interceptam o tráfego de rede no nível do kernel.
 
@@ -490,28 +572,50 @@ cd desktop && pnpm add firebase @tauri-apps/api
 
 **types.ts** — Interfaces TypeScript que espelham os modelos Rust do crate shared: `User`, `Device`, `BlockedItem`, `ParentalLink`. Definir também: `BlockMode` como union type `'personal' | 'parental'` e `BlockItemType` como `'site' | 'app'`. Esses tipos garantem que o frontend e o backend concordam sobre a forma dos dados.
 
-**stores/auth.ts** — Svelte writable store com: `user` (`User | null`), `isAuthenticated` (boolean), `isLoading` (boolean). Funções que atualizam o store: `login`, `loginWithGoogle`, `register`, `logout`. No `+layout.svelte`, chamar `onAuthChange` para manter o store sincronizado com o estado do Firebase — se o token expirar e for renovado, ou se o usuário fizer logout em outra aba, o store reflete automaticamente.
+**stores/auth.ts** — Svelte writable store com estado variante:
+
+```ts
+type AuthState =
+  | { kind: 'loading' }
+  | { kind: 'unauthenticated' }
+  | { kind: 'firebase', user: User, mode: 'personal' | 'parental', source: 'firebase' }
+  | { kind: 'child', userId: string, deviceId: string, deviceToken: string, source: 'child' };
+```
+
+Funções:
+- `login(email, password)` e `loginWithGoogle()` — fluxo Pessoal/Pais, usa Firebase Auth.
+- `register(email, password, displayName, mode)` — fluxo Pessoal/Pais.
+- `confirmChildCode(code, deviceName, platform)` — fluxo Filhos: chama `POST /devices/link/confirm` (rota pública), recebe `device_token`, salva no secure storage do Tauri, atualiza o store com `kind: 'child'`.
+- `logout()` — para Pessoal/Pais: `signOut` do Firebase; para Child: limpa o device_token do storage e reseta o store.
+
+No `+layout.svelte`, chamar `onAuthChange` do Firebase para manter o caminho Pessoal/Pais sincronizado. Além disso, na inicialização, ler o device_token do secure storage — se existir e ainda for válido (fazer um `GET /auth/me` ou `GET /blocklist` com o token), popular o store com `kind: 'child'`.
 
 **stores/blocking.ts** — Svelte writable store com: `blocklist` (`BlockedItem[]`), `isBlockingActive` (boolean), `isAdultFilterEnabled` (boolean), `blockMode` (`BlockMode`). Funções: `fetchBlocklist` (busca via tauri-bridge e atualiza o store), `addItem` (chama bridge + atualiza store), `removeItem`, `toggleBlocking` (chama bridge que liga/desliga o engine), `toggleAdultFilter`. Cada função chama o tauri-bridge e depois atualiza o store — garantindo que a UI sempre reflete o estado real.
 
 **Componentes** — Implementar com Tailwind CSS:
 
-1. `LoginForm.svelte` — Formulário com campos email/senha com validação, botão de login por email, botão de login com Google (estilizado com ícone), link para registro, e logo do DopaBlocker.
-2. `BlockList.svelte` — Lista que itera sobre a blocklist do store, renderizando um `BlockListTile` para cada item. Mostra mensagem "Nenhum site bloqueado" quando a lista está vazia.
-3. `AddBlockModal.svelte` — Dialog modal com input para URL ou nome do app, select para escolher tipo (site/app), e botões Cancelar/Adicionar. Valida que o campo não está vazio antes de enviar.
-4. `ParentalDashboard.svelte` — Lista de dispositivos-filhos vinculados com status de cada um. Mostra mensagem quando nenhum dispositivo está vinculado.
-5. `DeviceLinkCode.svelte` — Dois modos: (1) para o pai, exibe o código de 6 dígitos com countdown de 5 minutos e botão para gerar novo código; (2) para o filho, mostra input para inserir o código com botão de confirmar.
-6. `ModeSelector.svelte` — Radio/toggle para alternar entre Pessoal e Parental, com opção pai/filho quando Parental está selecionado.
+1. `WelcomeScreen.svelte` — Tela inicial com os **três botões grandes**: Pessoal, Pais, Filhos. Cada botão navega para a rota correspondente: `/onboarding/personal`, `/onboarding/parent`, `/onboarding/child`. É a primeira tela que aparece quando o app não tem sessão salva.
+2. `SignupForm.svelte` — Formulário compartilhado entre Pessoal e Pais (email, senha, nome, botão Google). Recebe uma prop `mode: 'personal' | 'parental'` que é enviada ao backend no `POST /auth/register`.
+3. `ChildCodeInput.svelte` — Tela do fluxo "Filhos": 6 inputs separados de 1 caractere cada (avançam foco automaticamente), botão Confirmar, sem qualquer campo de cadastro. Chama `confirmLinkCode(code)` e, em sucesso, salva o `device_token` + `user_id` no store e navega para a tela read-only do filho.
+4. `LoginForm.svelte` — Para quem já tem conta (apenas Pessoal e Pais). Email/senha, botão Google, link "Criar conta" que volta para `WelcomeScreen`.
+5. `BlockList.svelte` — Lista que itera sobre a blocklist do store, renderizando um `BlockListTile` para cada item. Mostra mensagem "Nenhum site bloqueado" quando a lista está vazia. Quando `auth.source === 'child'`, renderiza em modo read-only (sem botões de adicionar/remover).
+6. `AddBlockModal.svelte` — Dialog modal com input para URL ou nome do app, select para escolher tipo (domain/app), e botões Cancelar/Adicionar. Visível apenas para user pai ou pessoal.
+7. `ParentalDashboard.svelte` — Lista de dispositivos-filhos vinculados (via `GET /devices` filtrado por `is_child = true`). Mostra mensagem quando nenhum dispositivo está vinculado.
+8. `DeviceLinkCode.svelte` — Exibe o código de 6 dígitos gerado pelo pai com countdown de 5 minutos e botão para gerar novo código.
 
-**Páginas:**
+**Rotas (SvelteKit):**
 
-1. `login/+page.svelte` — Usa LoginForm, redireciona para `/` se já autenticado.
-2. `+page.svelte` (home) — Card grande com status do bloqueio (ativo/inativo, verde/vermelho), botão on/off central, contador de sites e apps bloqueados, indicador do modo atual.
-3. `blocking/+page.svelte` — BlockList + AddBlockModal + toggle de filtro adulto + botão master de bloqueio.
-4. `parental/+page.svelte` — ModeSelector + DeviceLinkCode + ParentalDashboard.
-5. `settings/+page.svelte` — Info da conta + logout + desvincular dispositivos.
+1. `welcome/+page.svelte` — Usa `WelcomeScreen`. Primeira tela quando não há sessão.
+2. `onboarding/personal/+page.svelte` — `SignupForm` com `mode='personal'` + link para login se já tiver conta.
+3. `onboarding/parent/+page.svelte` — `SignupForm` com `mode='parental'` + link para login.
+4. `onboarding/child/+page.svelte` — `ChildCodeInput`.
+5. `login/+page.svelte` — `LoginForm`, usado quando o usuário clica em "Já tenho conta" nos fluxos Pessoal/Pais.
+6. `+page.svelte` (home) — Card grande com status do bloqueio (ativo/inativo, verde/vermelho), botão on/off central, contador de sites e apps bloqueados, indicador do modo atual. No modo `child`, o botão on/off é read-only (cinza, sem ação).
+7. `blocking/+page.svelte` — `BlockList` + (se não for `child`) `AddBlockModal` + toggle de filtro adulto + botão master de bloqueio.
+8. `parental/+page.svelte` — Só acessível em modo parental e não-child: `DeviceLinkCode` + `ParentalDashboard`.
+9. `settings/+page.svelte` — Info da conta + logout + desvincular dispositivos. No modo child, mostra apenas "Desvincular este dispositivo" (que chama uma rota de revogação de token).
 
-**+layout.svelte** — Adicionar navegação (sidebar ou top nav) com links para `/`, `/blocking`, `/parental`, `/settings`. Esconder a navegação na página de login. Chamar `onAuthChange` aqui para que o listener de autenticação esteja ativo em todas as páginas.
+**+layout.svelte** — Adicionar navegação (sidebar ou top nav) com links para `/`, `/blocking`, `/parental`, `/settings`. Ocultar `/parental` no modo child e pessoal. Esconder a navegação nas rotas `/welcome`, `/onboarding/*` e `/login`. A lógica de "tem sessão?" precisa verificar tanto Firebase Auth (Pessoal/Pais) quanto o device_token salvo no localStorage/Tauri secure storage (Filhos). Se não há nenhum dos dois, redirecionar para `/welcome`.
 
 ### Como testar
 
@@ -574,7 +678,7 @@ Sem isso, o Firebase não inicializa e nada funciona. Esse é o passo que mais c
 | `lib/main.dart` | WidgetsFlutterBinding, Firebase.initializeApp, ProviderScope, rodar App |
 | `lib/app.dart` | MaterialApp com ThemeData e rotas |
 | `lib/theme.dart` | ThemeData com cores DopaBlocker, estilos de botão/input/card |
-| `lib/routes.dart` | Map de rotas nomeadas: /login, /home, /blocking, /parental, /link-device, /settings |
+| `lib/routes.dart` | Map de rotas nomeadas: /welcome, /signup, /login, /child-code, /home, /blocking, /parental, /settings |
 | `lib/core/constants.dart` | BACKEND_URL (dev/prod), nomes dos method channels, chaves SharedPreferences |
 | `lib/core/firebase_service.dart` | Wrapper Firebase Auth: signInEmail, signInGoogle, register, signOut, getIdToken, authStateChanges |
 | `lib/core/api_client.dart` | Classe HTTP com get/post/put/delete, JWT automático no header, base URL de constants |
@@ -599,9 +703,41 @@ Sem isso, o Firebase não inicializa e nada funciona. Esse é o passo que mais c
 
 **Providers Riverpod** — Cada provider é um `StateNotifier` que gerencia um estado imutável. O Riverpod garante que qualquer widget que observe um provider é reconstruído automaticamente quando o estado muda — sem callbacks manuais, sem `setState()`.
 
-- `auth_provider` — Escuta `authStateChanges` do Firebase e atualiza o estado (logado/deslogado/carregando). Quando o usuário faz login, obtém o JWT e chama o backend `/auth/login` para sincronizar. Quando faz logout, limpa o estado e redireciona para a tela de login.
+- `auth_provider` — Gerencia um estado variante (**sealed class `AuthState`**):
+
+  ```dart
+  sealed class AuthState {}
+  class AuthLoading extends AuthState {}
+  class AuthUnauthenticated extends AuthState {}
+  class AuthFirebase extends AuthState {   // Pessoal ou Pais
+    final User user;
+    final String mode;  // 'personal' ou 'parental'
+    AuthFirebase(this.user, this.mode);
+  }
+  class AuthChildSession extends AuthState {  // Filho sem conta Firebase
+    final String userId;       // user_id do pai
+    final String deviceId;     // id deste device filho
+    final String deviceToken;  // dt_xxx (guardado em secure storage)
+    AuthChildSession(this.userId, this.deviceId, this.deviceToken);
+  }
+  ```
+
+  Funções:
+  - `login`, `loginWithGoogle`, `register` — fluxo Pessoal/Pais via Firebase. Escuta `authStateChanges` do Firebase e chama `POST /auth/login` no backend para sincronizar.
+  - `confirmChildCode(code, deviceName, platform)` — fluxo Filhos. Chama `POST /devices/link/confirm` (rota pública, sem header Authorization), recebe o `device_token`, salva via `flutter_secure_storage`, e atualiza o estado para `AuthChildSession`.
+  - `logout` — limpa Firebase session OU limpa secure storage + device token, dependendo do estado atual.
+  - Na inicialização (`checkAuthState`), verifica primeiro o Firebase (`authStateChanges.first`). Se não houver Firebase user, tenta ler `device_token` do secure storage e faz um ping no backend (`GET /blocklist`) para validar. Se o token for válido, restaura `AuthChildSession`; senão, vai para `AuthUnauthenticated`.
+
 - `blocking_provider` — Gerencia a blocklist e o estado do bloqueio. Faz chamadas ao `api_client` para sincronizar com o backend e ao `blocking_channel` para controlar o bloqueio nativo (VPN). Quando o usuário adiciona um site, o provider: salva no banco local (via `database_service`), atualiza o state (UI reflete), envia para o backend (sync), e atualiza a blocklist na VPN (via `blocking_channel`).
-- `device_provider` — Comunica exclusivamente com o backend via `api_client`. Gerencia a lista de dispositivos e a vinculação parental.
+
+  **Aplicação da regra do pai imune**: antes de chamar `BlockingChannel.updateBlocklist`, consulta o `auth_provider` para saber o modo. Se for `AuthFirebase(mode: 'parental')` e o device atual não for filho, envia **lista vazia** para o VPN Service. Ver detalhes na Fase M2.
+
+- `device_provider` — Comunica exclusivamente com o backend via `api_client`. Gerencia a lista de dispositivos e a vinculação parental. A função `generateLinkCode()` só está disponível quando `auth_provider` estiver em `AuthFirebase(mode: 'parental')` (UI oculta o botão caso contrário).
+
+**api_client.dart** — a função de request precisa escolher o header `Authorization` baseado no estado do `auth_provider`:
+- Se `AuthFirebase`: `Bearer <firebase_jwt>` (chamando `getIdToken()`)
+- Se `AuthChildSession`: `Bearer <device_token>` (usa o token guardado, que já tem o prefixo `dt_`)
+- Se `AuthUnauthenticated` ou `AuthLoading`: sem header (só rotas públicas funcionam — `/auth/register`, `/auth/login`, `/devices/link/confirm`)
 
 **blocking_channel.dart** — Define a ponte Flutter ↔ Kotlin. Declara um `MethodChannel` com nome `'com.dopablocker/blocking'` e expõe métodos estáticos que chamam `invokeMethod`. Os métodos são: `startVpn()`, `stopVpn()`, `isVpnActive()`, `updateBlocklist(List<String> domains)`. Nesta fase, o lado Kotlin ainda não responde — o channel só vai funcionar de verdade na Fase M2. Chamadas vão lançar `MissingPluginException`, o que é esperado.
 
@@ -655,6 +791,18 @@ O bloqueio no Android depende de serviços nativos que não existem em Dart. O F
 
 Manter a blocklist como variável estática (`companion object`) que pode ser atualizada via `updateBlocklist(domains)` chamado do MethodChannel — sem precisar reiniciar a VPN inteira.
 
+**Regra do pai imune:** antes de chamar `updateBlocklist` do lado Dart, o `blocking_provider` precisa consultar o modo do user e o `is_child` do device:
+
+```dart
+final effectiveList = (userMode == 'parental' && !device.isChild)
+    ? <String>[]                    // pai imune — lista vazia
+    : blocklist;                    // pessoal OU filho — aplica tudo
+
+await BlockingChannel.updateBlocklist(effectiveList);
+```
+
+No device do pai em modo parental, a VPN roda com lista vazia — todo o tráfego passa. A lógica fica no Dart (não no Kotlin) porque os dados de `userMode` e `isChild` já estão no estado do Riverpod, evitando precisar passá-los pelo MethodChannel.
+
 Registrar no `AndroidManifest.xml` como `<service>` com `android:permission="android.permission.BIND_VPN_SERVICE"` e `<intent-filter>` para `android.net.VpnService`.
 
 **accessibility/AppBlockerService.kt** — Estende `AccessibilityService`. Este serviço recebe eventos do sistema sempre que uma janela muda (app aberto, tela trocada). No `onAccessibilityEvent`, verificar se `eventType == TYPE_WINDOW_STATE_CHANGED`. Extrair o `packageName` do evento — esse é o identificador único do app que acabou de abrir (ex: `com.instagram.android`). Se o `packageName` está na lista de apps bloqueados, criar um `Intent` para a `MainActivity` do DopaBlocker com `FLAG_ACTIVITY_NEW_TASK` — isso traz o DopaBlocker para frente, efetivamente impedindo o uso do app bloqueado.
@@ -701,38 +849,63 @@ Com providers, services e código nativo funcionando, todas as camadas invisíve
 1. theme.dart — Cores e estilos
 2. routes.dart — Mapa de rotas
 3. app.dart — MaterialApp com theme e routes
-4. login_screen.dart
-5. home_screen.dart
-6. block_list_tile.dart + add_block_dialog.dart
-7. blocking_screen.dart
-8. mode_selector.dart
-9. link_device_screen.dart
-10. parental_screen.dart
-11. settings_screen.dart
+4. welcome_screen.dart — 3 opções (Pessoal / Pais / Filhos)
+5. signup_screen.dart — cadastro compartilhado Pessoal/Pais
+6. login_screen.dart — login Pessoal/Pais
+7. child_code_screen.dart — input de 6 dígitos para Filhos
+8. home_screen.dart
+9. block_list_tile.dart + add_block_dialog.dart
+10. blocking_screen.dart
+11. parental_screen.dart — só pai, gera código e lista filhos
+12. settings_screen.dart
 
 ### Detalhamento
 
 Todas as telas devem ser `ConsumerWidget` (Riverpod) em vez de `StatelessWidget`. Isso dá acesso ao `ref`, que permite observar providers com `ref.watch()` (a tela re-renderiza quando o provider muda) e disparar ações com `ref.read().método()`.
 
-**login_screen.dart** — Campos de email e senha com validação (email válido, senha não vazia). Botão de login por email que chama `ref.read(authProvider.notifier).login(email, password)`. Botão de login com Google estilizado com ícone do Google. Link "Criar conta" que alterna para modo registro. Logo do DopaBlocker no topo. Redirecionar para `/home` após login bem-sucedido. Mostrar `SnackBar` em caso de erro (credenciais inválidas, rede indisponível).
+**welcome_screen.dart** — Primeira tela que aparece quando o `auth_provider` está em `AuthUnauthenticated`. Três `Card`s grandes em coluna: **Pessoal**, **Pais**, **Filhos**. Cada card tem um ícone, um título e uma breve descrição ("Para mim mesmo" / "Para gerenciar os filhos" / "Colocar o código de vinculação"). Ao tocar:
+- Pessoal → navega para `/signup?mode=personal`
+- Pais → navega para `/signup?mode=parental`
+- Filhos → navega para `/child-code`
 
-**home_screen.dart** — Dashboard principal, primeira tela após login. Card grande com status do bloqueio: fundo verde e texto "Bloqueio ativo" quando ligado, fundo vermelho e "Bloqueio inativo" quando desligado. Botão on/off central que chama `toggleBlocking`. Contador de sites e apps bloqueados (lido do `blocking_provider`). Indicador do modo atual (Pessoal/Parental). Usar `BottomNavigationBar` com 4 itens: Home, Bloqueios, Parental, Config.
+**signup_screen.dart** — Recebe um parâmetro `mode: 'personal' | 'parental'`. Campos: email, senha, nome. Botão "Criar conta" que chama `register(email, senha, nome, mode)`. Botão secundário "Entrar com Google" com login Google (envia o mode junto). Link inferior "Já tenho conta" → navega para `/login?mode=<mode>`. Após sucesso, redirecionar para `/home`.
 
-**blocking_screen.dart** — Tela de gerenciamento da blocklist. Mostra a lista de itens bloqueados usando `block_list_tile` para cada item. FAB (Floating Action Button) no canto inferior que abre `add_block_dialog`. Switch para ligar/desligar o filtro de conteúdo adulto. Botão master de bloqueio (bloquear/desbloquear tudo). No modo parental-filho, a lista é exibida como read-only — o filho não pode editar os bloqueios definidos pelo pai.
+**login_screen.dart** — Campos de email e senha com validação (email válido, senha não vazia). Botão de login por email que chama `ref.read(authProvider.notifier).login(email, password)`. Botão de login com Google estilizado com ícone do Google. Link "Criar conta" que volta para `/welcome`. Logo do DopaBlocker no topo. Redirecionar para `/home` após login bem-sucedido. Mostrar `SnackBar` em caso de erro (credenciais inválidas, rede indisponível).
 
-**block_list_tile.dart** — Widget reutilizável que recebe um `BlockedItem`. Mostra ícone (globo para site, ícone de app para app), nome/URL, e status ativo/inativo com cor diferente. Gesture de swipe para remover ou ícone de lixeira que chama `removeItem`.
+**child_code_screen.dart** — Tela dedicada para o fluxo Filhos. **Sem campos de email/senha, sem `AppBar` com "voltar para login"**. Conteúdo:
+- Título "Digite o código que o responsável gerou"
+- 6 `TextField`s estreitos lado a lado, cada um aceitando 1 dígito. Ao digitar, avança o foco automaticamente; ao apagar, volta. Uma variante mais elegante usa o pacote `pin_code_fields`.
+- Botão "Confirmar" → chama `ref.read(authProvider.notifier).confirmChildCode(code, deviceName, platform)`. Em sucesso, navega para `/home`. Em erro (código inválido/expirado), mostra `SnackBar` vermelho.
+- Link pequeno no rodapé "Não é você? Voltar" → retorna para `/welcome`.
 
-**add_block_dialog.dart** — `AlertDialog` com `TextField` para digitar URL ou nome do app. `SegmentedButton` para escolher o tipo (site/app). Botões Cancelar e Adicionar. Validar que o campo não está vazio antes de enviar. Ao confirmar, chama `addItem` no provider e fecha o dialog.
+**home_screen.dart** — Dashboard principal, primeira tela após login. Card grande com status do bloqueio: fundo verde e texto "Bloqueio ativo" quando ligado, fundo vermelho e "Bloqueio inativo" quando desligado. Botão on/off central que chama `toggleBlocking`. Contador de sites e apps bloqueados (lido do `blocking_provider`). Indicador do modo atual (Pessoal / Pais / Filhos). `BottomNavigationBar`:
+- Pessoal: Home, Bloqueios, Config
+- Pais: Home, Bloqueios, Parental, Config
+- Filhos: Home, Bloqueios (read-only), Config
 
-**parental_screen.dart** — `ModeSelector` no topo para escolher entre Pai e Filho. Se o modo é Pai: lista de dispositivos-filhos vinculados (vindos do `device_provider`), botão para gerar código de vinculação, e opção de gerenciar a blocklist dos filhos. Se o modo é Filho: mensagem informando que os bloqueios são gerenciados pelo pai, e exibição dos bloqueios ativos como lista read-only.
+**blocking_screen.dart** — Tela de gerenciamento da blocklist. Mostra a lista de itens bloqueados usando `block_list_tile` para cada item. FAB (Floating Action Button) que abre `add_block_dialog` — **ocultar** o FAB quando `auth` é `AuthChildSession`. Switch para ligar/desligar o filtro de conteúdo adulto — também read-only para filho. No modo Filhos, a tela serve apenas para visualizar o que o pai definiu.
 
-**link_device_screen.dart** — Tela separada (sem bottom nav) para o processo de vinculação. Dois modos:
-- Gerando (pai): exibe o código de 6 dígitos em fonte grande e legível, countdown de 5 minutos mostrando o tempo restante, e botão para gerar um novo código se o atual expirar.
-- Inserindo (filho): 6 campos de input separados (um por dígito) que avançam automaticamente o foco, botão Confirmar, e feedback visual de sucesso ou erro.
+**block_list_tile.dart** — Widget reutilizável que recebe um `BlockedItem`. Mostra ícone (globo para domínio, ícone de app para app), nome/URL, e status ativo/inativo com cor diferente. Swipe para remover **só aparece se não for filho**.
 
-**settings_screen.dart** — Informações da conta (avatar, email, nome), botão de logout com dialog de confirmação ("Tem certeza?"), opção de desvincular dispositivos, e versão do app no rodapé.
+**add_block_dialog.dart** — `AlertDialog` com `TextField` para digitar URL ou nome do app. `SegmentedButton` para escolher o tipo (domain/app). Botões Cancelar e Adicionar. Validar que o campo não está vazio antes de enviar. Ao confirmar, chama `addItem` no provider e fecha o dialog. Só é aberto pelo FAB da `blocking_screen`, que não aparece para filho.
 
-**Navegação** — Usar `BottomNavigationBar` persistente nas telas principais (home, blocking, parental, settings). As telas de login e link_device são telas separadas sem bottom nav, acessadas via `Navigator.push`.
+**parental_screen.dart** — Tela visível **apenas** quando `auth` é `AuthFirebase(mode: 'parental')`. Conteúdo:
+- Botão grande "Gerar código de vinculação" → exibe o código em fonte enorme com countdown de 5 minutos.
+- Lista de dispositivos filhos vinculados (vindos do `device_provider`, filtrando `is_child = true`), com botão para revogar cada um.
+
+No modo Filhos essa tela nem aparece na navegação. No modo Pessoal também não.
+
+**settings_screen.dart** — Informações da conta (avatar, email, nome) para contas Firebase. Para `AuthChildSession`, mostra apenas "Dispositivo vinculado ao código X" + botão **"Desvincular este dispositivo"** (que chama uma rota que revoga o device_token). Em todos os modos: versão do app no rodapé e botão de logout.
+
+**Navegação** — Usar `BottomNavigationBar` persistente nas telas principais. As telas de welcome, signup, login e child_code são telas separadas sem bottom nav, acessadas antes do user estar autenticado. Na raiz do `app.dart`, escolher a rota inicial baseado no estado do `auth_provider`:
+
+```dart
+switch (authState) {
+  AuthLoading() => SplashScreen(),
+  AuthUnauthenticated() => WelcomeScreen(),
+  AuthFirebase() || AuthChildSession() => HomeScreen(),
+}
+```
 
 ### Como testar
 

@@ -8,15 +8,12 @@ pub struct BloomFilter {
     num_hashes: usize,
 }
 
-// Funções privadas de suporte
 fn fnv1a_hash(data: &str) -> u64 {
-    // Constantes mágicas do FNV-1a (definidas pelo algoritmo)
     const FNV_OFFSET: u64 = 14695981039346656037;
     const FNV_PRIME:  u64 = 1099511628211;
 
     let mut hash = FNV_OFFSET;
 
-    // Processa byte a byte:
     for byte in data.bytes() {
         hash ^= byte as u64;
         hash = hash.wrapping_mul(FNV_PRIME)
@@ -27,7 +24,6 @@ fn fnv1a_hash(data: &str) -> u64 {
 fn calculate_size(expected_items: usize, false_positive_rate: f64) -> usize {
     let n_f = expected_items as f64;
     let ln2 = 2.0_f64.ln();
-    // m = -(n * ln(p)) / (ln(2))²
     let bits_size = -(n_f * false_positive_rate.ln()) / (ln2 * ln2);
 
     bits_size.ceil() as usize
@@ -48,7 +44,6 @@ fn get_positions(item: &str, num_hashes: usize, array_size: usize) -> Vec<usize>
     let hash2 = fnv1a_hash(&format!("seed2_{}", item));
 
     let mut positions = Vec::with_capacity(num_hashes);
-    // posição_i = (hash1 + i * hash2) % tamanho_do_array
     for i in 0..num_hashes {
         let position = hash1.wrapping_add((i as u64).wrapping_mul(hash2)) % array_size as u64;
         positions.push(position as usize);
