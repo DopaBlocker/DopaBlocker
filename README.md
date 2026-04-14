@@ -51,6 +51,49 @@ O Rust precisa de um linker C++ para compilar no Windows.
 3. Certifique-se de que o **Windows SDK** e o **MSVC v14x** estão marcados no resumo à direita.
 4. Instalar e reiniciar o computador
 
+### Instalar OpenSSL via vcpkg (obrigatório para o backend)
+
+O backend usa `rusqlite` com a feature `bundled-sqlcipher`, que **compila o SQLCipher a partir do fonte** e linka contra o OpenSSL do sistema. Sem OpenSSL instalado, o `cargo build` falha com `Missing environment variable OPENSSL_DIR`.
+
+1. Clonar o vcpkg em `C:\vcpkg`:
+
+```bash
+cd /c
+git clone https://github.com/microsoft/vcpkg.git
+cd vcpkg
+./bootstrap-vcpkg.bat
+```
+
+2. Instalar o OpenSSL (demora ~5 min — compila do fonte):
+
+```bash
+./vcpkg.exe install openssl:x64-windows-static-md --disable-metrics
+```
+
+> A variante `x64-windows-static-md` é a esperada pelo `libsqlite3-sys` no Windows (OpenSSL estático, CRT dinâmico).
+
+3. Definir as variáveis de ambiente **permanentes** do usuário (via PowerShell ou `cmd`):
+
+```bash
+setx OPENSSL_DIR "C:\vcpkg\installed\x64-windows-static-md"
+setx OPENSSL_STATIC "1"
+setx VCPKGRS_DYNAMIC "0"
+```
+
+4. **Fechar e reabrir o terminal / IDE** para que as variáveis fiquem visíveis.
+
+5. Verificar:
+
+```bash
+echo $OPENSSL_DIR
+# Esperado: C:\vcpkg\installed\x64-windows-static-md
+
+cargo check -p dopablocker-backend
+# Esperado: Finished `dev` profile
+```
+
+> **Alternativa (sem OpenSSL):** trocar a feature `bundled-sqlcipher` por `bundled-sqlcipher-vendored-openssl` em [backend/Cargo.toml](backend/Cargo.toml). Bundla o OpenSSL junto (zero setup), mas deixa a primeira compilação mais lenta e depende de atualizações do crate para receber patches de segurança do OpenSSL.
+
 ### Instalar WebView2 (obrigatório para Tauri)
 
 O Tauri usa o WebView2 para renderizar a interface. No Windows 10/11 ele já vem instalado na maioria dos casos. Para verificar:
