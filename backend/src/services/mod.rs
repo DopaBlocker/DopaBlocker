@@ -1,3 +1,4 @@
-pub mod user_service;
-pub mod device_service;
+pub mod auth_service;
 pub mod blocklist_service;
+pub mod device_service;
+pub mod user_service;

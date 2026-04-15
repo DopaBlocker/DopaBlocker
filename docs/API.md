@@ -14,22 +14,25 @@ O backend aceita **dois tipos** de token no header `Authorization`, e o middlewa
 | Tipo | Prefixo | Quem usa | Formato |
 |---|---|---|---|
 | **Firebase JWT** | (sem prefixo) | Contas Pessoal e Pais | `Authorization: Bearer eyJhbGci...` |
-| **Device Token** | `dt_` | Devices filhos (sem conta) | `Authorization: Bearer dt_<hash>` |
+| **Device Token** | `dt_` | Devices filhos (sem conta) | `Authorization: Bearer dt_<plain_token>` |
 
 - O **Firebase JWT** é obtido pelo frontend via Firebase Auth SDK (login com email/senha ou Google). É renovado automaticamente pelo SDK.
 - O **Device Token** é obtido uma única vez pelo device filho quando ele confirma o código de vinculação (`POST /devices/link/confirm`). Fica válido até o pai revogar manualmente.
 
 Ambos resolvem para um `user_id` no backend (o id da conta do pai, no caso do device token).
 
-### Rotas públicas (sem `Authorization`)
+Somente `/devices/link/confirm` é **totalmente anônima** (o filho ainda não tem credencial alguma). `/auth/register` e `/auth/login` exigem um Firebase JWT no header — eles só não exigem que o `user` já exista localmente no SQLCipher.
 
-| Método | Rota | Descrição |
-|---|---|---|
-| POST | `/auth/register` | Criar conta Firebase + user local |
-| POST | `/auth/login` | Login (frontend já autenticou no Firebase, sincroniza com backend) |
-| POST | `/devices/link/confirm` | **Filho** confirma o código de vinculação e recebe um device token |
+### Matriz de autenticação
 
-Todas as demais rotas exigem um token válido (Firebase JWT ou Device Token).
+| Método | Rota | Firebase JWT | Device Token | Anônima |
+|---|---|---|---|---|
+| POST | `/auth/register` | obrigatório (user pode não existir no banco) | não aceito | — |
+| POST | `/auth/login` | obrigatório (user pode não existir no banco) | não aceito | — |
+| POST | `/devices/link/confirm` | — | — | **sim** |
+| Demais | * | obrigatório (+ user local) | aceito (somente leitura) | — |
+
+Tentativas de escrita (POST/DELETE/PUT) com Device Token retornam **403 Forbidden**. Tentativas de `/devices/link/generate` com Device Token também retornam **403** (apenas contas Firebase geram códigos).
 
 ---
 
@@ -39,9 +42,11 @@ Todas as demais rotas exigem um token válido (Firebase JWT ou Device Token).
 
 | Método | Rota | Descrição |
 |---|---|---|
-| POST | `/auth/register` | Criar conta (email, password, display_name, mode) |
+| POST | `/auth/register` | Criar registro local para uma conta Firebase recém-criada (email, display_name, mode) |
 | POST | `/auth/login` | Sincronizar user local com o Firebase user (body vazio, JWT no header) |
 | GET | `/auth/me` | Dados do usuário autenticado |
+
+> **Importante:** `firebase_uid` **nunca** vem do body — é extraído das claims do JWT validado. A senha também não transita pelo backend: é cadastrada no Firebase pelo frontend antes de chamar `/auth/register`.
 
 **POST /auth/register** — body:
 ```json

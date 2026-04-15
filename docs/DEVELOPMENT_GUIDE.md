@@ -113,19 +113,19 @@ chrono = { version = "0.4", features = ["serde"] }
 
 | Arquivo | O que implementar |
 |---------|------------------|
-| `backend/src/config.rs` | Struct AppConfig com port, database_url, firebase_project_id, sqlcipher_key. Função load() que usa dotenvy + std::env com valores default |
-| `backend/src/errors.rs` | Enum AppError (Unauthorized, NotFound, BadRequest, Internal). Implementar IntoResponse retornando status code + JSON |
-| `backend/src/models.rs` | Re-exportar tudo do shared. Adicionar DTOs: CreateUserRequest, LoginRequest, LoginResponse, AddBlockedItemRequest, GenerateLinkResponse, ConfirmLinkRequest |
+| `backend/src/config.rs` | Struct AppConfig com port, database_path, database_key (SQLCIPHER_KEY), firebase_project_id. Função init() que usa dotenvy + std::env com valores default |
+| `backend/src/errors.rs` | Enum AppError (Unauthorized, Forbidden, NotFound, BadRequest, Conflict, InternalServerError). Implementar IntoResponse retornando status code + JSON |
+| `backend/src/models.rs` | Re-exportar tudo do shared. Adicionar DTOs: RegisterRequest, CreateBlockedItemRequest, AdultFilterToggleRequest, RegisterDeviceRequest, GenerateLinkCodeResponse, ConfirmLinkRequest, ConfirmLinkResponse |
 | `backend/src/main.rs` | #[tokio::main] async fn main. Carregar config, inicializar tracing, conectar ao SQLCipher (abrir + PRAGMA key), rodar migrations, montar router, aplicar CORS, bind na porta |
 | `backend/migrations/001_initial.sql` | CREATE TABLE real para: users, devices, blocked_items, parental_links, adult_filter_settings |
 
 ### Detalhamento
 
-**config.rs** — Struct `AppConfig` com os campos: `port` (u16), `database_url` (String — caminho do arquivo .db), `firebase_project_id` (String), `firebase_api_key` (String), `sqlcipher_key` (String — chave de criptografia do banco). A função `load()` usa `dotenvy::dotenv().ok()` para carregar o `.env` (sem falhar se não existir) e depois lê cada variável com `std::env::var("NOME").unwrap_or("valor_default".into())`. A `sqlcipher_key` não deve ter valor default — se estiver vazia, o servidor deve recusar iniciar (panic com mensagem clara), porque rodar sem criptografia é uma falha de segurança.
+**config.rs** — Struct `AppConfig` com os campos: `port` (u16), `database_path` (String — caminho do arquivo .db), `database_key` (String — chave de criptografia do banco, lida de `SQLCIPHER_KEY`), `firebase_project_id` (String). A função `init()` usa `dotenvy::dotenv().ok()` para carregar o `.env` (sem falhar se não existir) e depois lê cada variável com `std::env::var("NOME").unwrap_or_else(|_| "valor_default".into())`. Em produção a `database_key` não deve ter valor default — se estiver vazia, o servidor deve recusar iniciar, porque rodar sem criptografia é uma falha de segurança.
 
-**errors.rs** — Enum `AppError` com variantes: `Unauthorized(String)`, `NotFound(String)`, `BadRequest(String)`, `Internal(String)`. Implementar o trait `IntoResponse` do Axum para que cada variante retorne o status HTTP correto (401, 404, 400, 500) com corpo JSON no formato `{ "error": "mensagem" }`. Isso permite que qualquer handler retorne `Result<Json<T>, AppError>` e o Axum converte automaticamente os erros em respostas HTTP padronizadas.
+**errors.rs** — Enum `AppError` com variantes: `Unauthorized(String)`, `Forbidden(String)`, `NotFound(String)`, `BadRequest(String)`, `Conflict(String)`, `InternalServerError(String)`. Implementar o trait `IntoResponse` do Axum para que cada variante retorne o status HTTP correto (401, 403, 404, 400, 409, 500) com corpo JSON no formato `{ "error": "mensagem" }`. Isso permite que qualquer handler retorne `Result<Json<T>, AppError>` e o Axum converte automaticamente os erros em respostas HTTP padronizadas. Um blanket `impl<E: std::error::Error> From<E> for AppError` converte erros genéricos (IO, rusqlite, etc.) em `InternalServerError`.
 
-**models.rs** — Importar e re-exportar todos os modelos do crate `shared` (para que o backend use `crate::models::User` em vez de `dopablocker_shared::models::User`). Além disso, definir DTOs (Data Transfer Objects) específicos do backend, que representam o que o frontend envia. A diferença entre um DTO e um model é: o model tem todos os campos (id, created_at, etc.), enquanto o DTO tem apenas os campos que o frontend precisa enviar. Exemplo: `CreateUserRequest` tem só email e display_name — o id é gerado pelo backend, o firebase_uid vem do JWT, e o created_at é preenchido automaticamente.
+**models.rs** — Importar e re-exportar todos os modelos do crate `shared` (para que o backend use `crate::models::User` em vez de `dopablocker_shared::models::User`). Além disso, definir DTOs (Data Transfer Objects) específicos do backend, que representam o que o frontend envia/recebe. A diferença entre um DTO e um model é: o model tem todos os campos (id, created_at, etc.), enquanto o DTO tem apenas os campos que o frontend precisa enviar. Exemplo: `RegisterRequest` tem email, display_name e mode — o id é gerado pelo backend, o firebase_uid vem do JWT validado, e o created_at é preenchido automaticamente.
 
 **migrations/001_initial.sql** — Tabelas com tipos SQLite (o arquivo SQL é o mesmo, SQLCipher é compatível com a sintaxe SQLite):
 
@@ -158,17 +158,17 @@ Salvar apenas o **hash SHA-256** do token no banco, nunca o plain text. Se o arq
 
 **main.rs** — O fluxo do main é sequencial e cada passo depende do anterior:
 
-1. Carregar configuração com `dotenvy` + `AppConfig::load()`.
+1. Carregar configuração com `dotenvy` + `AppConfig::init()`.
 2. Inicializar `tracing_subscriber` para logs estruturados no terminal.
-3. Abrir conexão SQLCipher com `tokio_rusqlite::Connection::open(&config.database_url)`.
-4. Executar `PRAGMA key = '<sqlcipher_key>';` como **primeiro** comando na conexão — isso é obrigatório, sem essa etapa o banco não descriptografa e qualquer query subsequente falha.
-5. Rodar os `CREATE TABLE IF NOT EXISTS` do migration inline (ler o arquivo .sql e executar).
-6. Compartilhar a conexão como `Arc<tokio_rusqlite::Connection>` no state do Axum via `Extension`.
-7. Montar o router chamando `routes::create_router(conn)`.
+3. Abrir conexão SQLCipher com `tokio_rusqlite::Connection::open(&config.database_path)`.
+4. Executar `PRAGMA key = '<database_key>';` como **primeiro** comando na conexão — isso é obrigatório, sem essa etapa o banco não descriptografa e qualquer query subsequente falha.
+5. Rodar as migrations SQL idempotentemente via tabela de controle `_migrations` (insere o nome após aplicar; salta se já aplicada).
+6. Compor o `AppState { config, db: tokio_rusqlite::Connection, jwks: Arc<JwksCache> }` e fazer `.with_state(state)` no router final.
+7. Montar o router compondo um router público (`/auth/register`, `/auth/login`, `/devices/link/confirm`) e um router protegido (demais rotas) via `.merge()`, com `route_layer(from_fn_with_state(state, require_auth))` apenas no protegido.
 8. Envolver com `CorsLayer::permissive()` do tower-http (necessário para o frontend SvelteKit acessar a API durante desenvolvimento).
 9. Fazer bind com `axum::serve` no `TcpListener` da porta configurada.
 
-> **Nota sobre PRAGMA key:** O `PRAGMA key` DEVE ser o primeiro comando executado após abrir a conexão. Qualquer outro comando antes dele faz o SQLCipher tratar o banco como não-criptografado e falhar. A chave vem da variável de ambiente `SQLCIPHER_KEY`.
+> **Nota sobre PRAGMA key:** O `PRAGMA key` DEVE ser o primeiro comando executado após abrir a conexão. Qualquer outro comando antes dele faz o SQLCipher tratar o banco como não-criptografado e falhar. A chave vem da variável de ambiente `SQLCIPHER_KEY`. Variáveis relacionadas: `DATABASE_PATH` (arquivo .db), `FIREBASE_PROJECT_ID` (usado na validação de `iss`/`aud` do JWT), `PORT` (default 3000).
 
 ### Como testar
 
@@ -246,36 +246,37 @@ Se qualquer uma dessas verificações falhar, retornar 401 Unauthorized.
 
 Se qualquer um desses passos falhar, retornar 401 Unauthorized.
 
-**Extractor `AuthUser`:**
+**Struct `AuthUser` injetada no request:**
 
 ```rust
 pub struct AuthUser {
-    pub user_id: String,           // sempre resolvido (seja via Firebase ou device token)
-    pub firebase_uid: Option<String>,  // None quando é device token
-    pub device_id: Option<String>,     // Some quando é device token
-    pub source: TokenSource,        // Firebase | DeviceToken
+    pub user_id: String,            // sempre resolvido (seja via Firebase ou device token)
+    pub source: AuthSource,         // Firebase | DeviceToken
+    pub device_id: Option<String>,  // Some quando é device token
 }
 
-pub enum TokenSource { Firebase, DeviceToken }
+pub enum AuthSource { Firebase, DeviceToken }
 ```
 
-Implementar como um Axum extractor: `AuthUser` que implementa o trait `FromRequestParts`. Quando um handler declara `AuthUser` como parâmetro, o Axum automaticamente executa a validação antes de chamar o handler. Se o token for inválido, o handler nem é executado.
+Implementar como um middleware Axum (`from_fn_with_state(state, require_auth)`) que valida o header, constrói o `AuthUser` e injeta via `req.extensions_mut().insert(...)`. Handlers acessam com `Extension<AuthUser>` como parâmetro. Se o token for inválido, o handler nem é executado.
 
-Handlers que precisam diferenciar (ex: impedir um device filho de modificar a blocklist) podem checar `source == TokenSource::Firebase` e retornar 403 caso contrário.
+**Enforcement read-only no próprio middleware:** se `auth.source == AuthSource::DeviceToken` e o método for POST/DELETE/PUT, retornar **403 Forbidden** antes mesmo de chegar no handler. Isso centraliza a regra e evita que cada handler precise checar. Handlers que precisam de Firebase JWT especificamente (ex: `/devices/link/generate`) fazem uma segunda checagem inline `if auth.source != AuthSource::Firebase → 403`.
 
 **Cache das chaves públicas do Firebase:** armazenar em `Arc<RwLock<HashMap<String, DecodingKey>>>` e atualizar quando expirar (o header `Cache-Control` da resposta do Google indica por quanto tempo a chave é válida, geralmente ~24h). Sem esse cache, cada requisição faria um HTTP request para o Google — inaceitável em termos de latência.
 
-**services/auth_service.rs** — Funções que interagem com o banco para gerenciar usuários:
+**services/user_service.rs** — Funções que interagem com o banco para gerenciar usuários:
 
-- `create_user(conn, firebase_uid, email, display_name)` — Insere um novo usuário no SQLCipher, gerando um UUID v4 para o campo `id`. O `firebase_uid` vem do JWT validado e vincula o registro local ao sistema de autenticação do Firebase.
-- `get_user_by_firebase_uid(conn, firebase_uid)` — Busca um usuário pelo `firebase_uid`. Retorna `Option<User>` porque o usuário pode não existir localmente ainda (primeiro login).
-- `get_or_create_user(conn, firebase_uid, email, display_name)` — Combina as duas funções acima: tenta buscar pelo `firebase_uid`; se não encontrar, cria. Isso é útil no endpoint de login, onde o backend precisa garantir que o usuário existe localmente sem exigir um passo de registro separado.
+- `create_user(db, firebase_uid, email, display_name, mode)` — Insere um novo usuário no SQLCipher, gerando um UUID v4 para o campo `id`. O `firebase_uid` vem do JWT validado e vincula o registro local ao sistema de autenticação do Firebase.
+- `get_user_by_firebase_uid(db, firebase_uid)` — Busca um usuário pelo `firebase_uid`. Retorna `Option<User>` porque o usuário pode não existir localmente ainda (primeiro login).
+- `get_user_by_id(db, user_id)` — Busca um usuário pelo `id` local (usado pelo handler `/auth/me` depois que o middleware já resolveu o `user_id`).
+
+`auth_service.rs` fica praticamente vazio — a validação de token vive no `middleware.rs` e a lógica de persistência fica em `user_service`.
 
 **routes/auth.rs** — Três endpoints de autenticação:
 
-- `POST /auth/register` — Recebe `CreateUserRequest` (email, display_name), cria o usuário no banco e retorna o `User` completo. Este endpoint é chamado apenas uma vez, no primeiro cadastro.
-- `POST /auth/login` — O login real acontece no frontend via Firebase SDK. Este endpoint serve para **sincronizar**: o frontend envia o JWT, o backend valida, e usa `get_or_create_user` para garantir que o usuário existe localmente. Retorna os dados do usuário. Isso é necessário porque o Firebase e o banco local são sistemas separados — o login no Firebase não cria automaticamente o registro no SQLCipher.
-- `GET /auth/me` — Rota protegida com `AuthUser`. Simplesmente busca e retorna os dados do usuário autenticado. Usada pelo frontend para verificar se a sessão ainda é válida e carregar os dados do usuário no state.
+- `POST /auth/register` — **Público do ponto de vista do middleware global**, mas valida o Firebase JWT manualmente (via `extract_bearer_token` + `verify_firebase_jwt_token`) porque o `firebase_uid` precisa vir das claims. Recebe `RegisterRequest` (email, display_name, mode), cria o usuário no banco e retorna o `User` completo. Se o `firebase_uid` já existir localmente, retorna **409 Conflict**. Este endpoint é chamado apenas uma vez, no primeiro cadastro.
+- `POST /auth/login` — Mesmo esquema: valida o JWT manualmente, faz lookup por `firebase_uid`, e retorna o `User`. Se não encontrar, retorna **404** forçando o frontend a chamar `/auth/register` primeiro. (Separar as duas etapas é uma escolha de segurança: impede que um JWT válido crie silenciosamente contas locais.)
+- `GET /auth/me` — Rota protegida pelo middleware global. Usa `get_user_by_id(state.db, auth.user_id)` e retorna os dados do usuário autenticado. Usada pelo frontend para verificar se a sessão ainda é válida e carregar os dados do usuário no state.
 
 ### Como testar
 
@@ -318,7 +319,7 @@ rand = "0.8"
 **services/blocklist_service.rs** — Funções de acesso ao banco para a blocklist. Toda query filtra por `user_id`, garantindo que um usuário nunca acessa os dados de outro:
 
 - `get_user_blocklist(conn, user_id)` — `SELECT * FROM blocked_items WHERE user_id = ?`. Retorna todos os itens bloqueados do usuário, incluindo inativos (o frontend decide se mostra ou filtra).
-- `add_blocked_item(conn, user_id, item_type, value)` — Gera um UUID v4 para o `id`, valida que `item_type` é "site" ou "app", normaliza o domínio (se for site) usando `domain_matcher::normalize_domain`, e faz o INSERT. Retorna o item criado com todos os campos preenchidos.
+- `add_item(db, user_id, payload)` — Gera um UUID v4 para o `id`, aceita `item_type` em `"domain" | "app" | "keyword"`, normaliza o `value` (trim + lowercase), e faz o INSERT. A UNIQUE constraint `(user_id, item_type, value)` garante idempotência — duplicata vira `AppError::Conflict` (409). Retorna o item criado com todos os campos preenchidos.
 - `remove_blocked_item(conn, user_id, item_id)` — `DELETE FROM blocked_items WHERE id = ? AND user_id = ?`. A cláusula `AND user_id` é uma proteção: mesmo que alguém descubra o id de um item de outro usuário, o DELETE não vai funcionar porque o user_id não bate.
 - `toggle_adult_filter(conn, user_id, enabled)` — `INSERT OR REPLACE INTO adult_filter_settings`. Usa INSERT OR REPLACE porque a tabela tem UNIQUE no user_id — se o registro já existe, atualiza; se não, cria. Isso evita a necessidade de verificar se o registro existe antes de decidir entre INSERT e UPDATE.
 
@@ -339,7 +340,7 @@ rand = "0.8"
 **routes/blocklist.rs** — Todas as rotas são protegidas com o extractor `AuthUser`, ou seja, exigem JWT válido. O `user_id` vem do token, nunca do corpo da requisição (isso impede que um usuário se passe por outro):
 
 - `GET /blocklist` — Lista todos os itens bloqueados do usuário autenticado.
-- `POST /blocklist` — Adiciona um item. Recebe `AddBlockedItemRequest` com `item_type` e `value`.
+- `POST /blocklist` — Adiciona um item. Recebe `CreateBlockedItemRequest` com `item_type` (`"domain" | "app" | "keyword"`) e `value`. Retorna 409 se o item já existir.
 - `DELETE /blocklist/:id` — Remove um item pelo `id`. O service verifica que o item pertence ao usuário.
 - `PUT /blocklist/adult-filter` — Liga/desliga o filtro de conteúdo adulto. Recebe `{ "enabled": true/false }`.
 
