@@ -1,3 +1,29 @@
+// =============================================================================
+// device_service — CRUD de devices + fluxo completo de vinculação parental.
+// =============================================================================
+// Este é o service mais complexo do backend. Contém três responsabilidades:
+//
+//   1. CRUD básico de devices (register, list).
+//   2. Geração de código de vinculação (pai).
+//   3. Confirmação do código (filho) — que é uma TRANSAÇÃO com 4 passos:
+//        a) valida o código (não consumido, não expirado)
+//        b) cria o device filho
+//        c) marca o `parental_link` como 'active'
+//        d) insere o hash do device_token em `device_tokens`
+//      Os quatro passos vivem numa mesma `tx` — se um falha, nenhum outro
+//      é persistido. É a única parte do backend que realmente precisa de
+//      transação; o resto são queries isoladas.
+//
+// O código de vinculação tem 6 dígitos decimais (100k combinações) e TTL
+// de 5 minutos. É curto de propósito: o pai precisa ditar em voz alta.
+// A unicidade entre códigos `pending` é garantida por índice UNIQUE
+// PARCIAL na migration 002 (não ficam órfãos depois que viram 'active').
+//
+// O Device Token devolvido pela `confirm_link` é a ÚNICA vez em que o
+// token aparece em plain text. Depois disso o banco só tem o SHA-256 e
+// não há como recuperar — perdeu, refaz o fluxo.
+// =============================================================================
+
 use chrono::Utc;
 use rand::Rng;
 use rusqlite::{params, OptionalExtension};
@@ -11,6 +37,10 @@ use crate::models::{
     RegisterDeviceRequest,
 };
 
+/// TTL do código de vinculação em segundos. 5 min é o meio-termo:
+/// tempo suficiente para pai e filho coordenarem presencialmente,
+/// curto o bastante para limitar brute-force (100k códigos / 5min =
+/// alguém teria que chutar 333 códigos/s para cobrir todo o espaço).
 const LINK_CODE_TTL_SECS: i64 = 5 * 60;
 
 fn platform_to_str(p: &Platform) -> &'static str {
@@ -27,6 +57,9 @@ fn str_to_platform(s: &str) -> Platform {
     }
 }
 
+/// Registra device do PAI. O `is_child` é hard-coded como 0 aqui — um device
+/// filho SÓ nasce via `confirm_link`. Isso elimina a classe inteira de bugs
+/// "cliente mandou is_child=true e burlou a hierarquia".
 pub async fn register_device(
     db: &Connection,
     user_id: String,
@@ -60,6 +93,10 @@ pub async fn register_device(
     })
 }
 
+/// Lista todos os devices do user (pai + filhos). Ordenação ASC por
+/// created_at corresponde à ordem cronológica que o usuário adicionou os
+/// devices — útil para a tela "Meus aparelhos" mostrar "meu PC" (criado
+/// primeiro) no topo.
 pub async fn list_devices(db: &Connection, user_id: String) -> Result<Vec<Device>, AppError> {
     db.call(move |c| {
         let mut stmt = c.prepare(
@@ -84,6 +121,16 @@ pub async fn list_devices(db: &Connection, user_id: String) -> Result<Vec<Device
     .map_err(|e| AppError::InternalServerError(e.to_string()))
 }
 
+/// Gera código de 6 dígitos para vincular device filho.
+///
+/// Pré-condição: o pai precisa ter pelo menos um device registrado — usamos
+/// o primeiro (mais antigo) como "parent_device_id" para o registro em
+/// `parental_links`. Se não tem nenhum, rejeita 400 pedindo registro prévio.
+///
+/// Colisão de código: o UNIQUE parcial em `parental_links(link_code) WHERE
+/// status='pending'` impede que dois códigos pending coincidam. Se cair na
+/// colisão (chance ~1 em 100k - N), devolvemos 409 e o frontend pode tentar
+/// de novo. Códigos já `active` não contam — podem ser reusados.
 pub async fn generate_link_code(
     db: &Connection,
     parent_user_id: String,
@@ -112,6 +159,9 @@ pub async fn generate_link_code(
         )
     })?;
 
+    // Código com zero-padding para sempre ter 6 caracteres (ex: "000042").
+    // `rand::thread_rng()` é um PRNG rápido, não-cripto, suficiente aqui:
+    // o adversário tem 5 min e UNIQUE para lutar contra, não os bits de entropia.
     let code = {
         let mut rng = rand::thread_rng();
         format!("{:06}", rng.gen_range(0..1_000_000))
@@ -144,6 +194,20 @@ pub async fn generate_link_code(
     Ok(GenerateLinkCodeResponse { code, expires_at })
 }
 
+/// Consome um código e emite o Device Token do filho. Transação obrigatória:
+/// os quatro passos têm que ser atômicos, senão podemos deixar o banco em
+/// estado quebrado (ex: device filho criado mas sem token correspondente).
+///
+/// Trick de propagação de erros com mensagens custom:
+/// `tokio_rusqlite::Error::Other` aceita qualquer `Box<dyn Error>`. Usamos
+/// strings sentinela ("LINK_NOT_FOUND", "LINK_EXPIRED") para que a camada
+/// externa possa distinguir do erro genérico de SQL e traduzir para HTTP
+/// mais específico (400 vs 500).
+///
+/// Geração do plain token: concatenamos dois UUIDs v4 "simple" (sem hífens)
+/// → 64 hex chars = 256 bits de entropia. Overkill, mas barato. O prefixo
+/// "dt_" é adicionado só no response — o hash gravado no banco é calculado
+/// sobre o plain SEM prefixo, alinhado com o que o middleware faz no strip_prefix.
 pub async fn confirm_link(
     db: &Connection,
     payload: ConfirmLinkRequest,
@@ -168,8 +232,11 @@ pub async fn confirm_link(
             let now_iso = now_iso.clone();
             let token_hash = token_hash.clone();
             move |c| {
+                // Transação: se qualquer um dos statements falhar, rollback
+                // automático ao sair do escopo sem `commit()`.
                 let tx = c.transaction()?;
 
+                // (a) Valida o código: precisa existir e estar 'pending'.
                 let link: Option<(String, String, String)> = tx
                     .query_row(
                         "SELECT id, parent_device_id, expires_at FROM parental_links
@@ -194,18 +261,25 @@ pub async fn confirm_link(
                     }
                 };
 
+                // Comparação lexicográfica de strings ISO-8601 UTC funciona
+                // como comparação cronológica — propriedade garantida pelo
+                // formato fixed-width com zero-padding (ano, mês, dia…).
                 if expires_at.as_str() < now_iso.as_str() {
                     return Err(tokio_rusqlite::Error::Other(
                         Box::<dyn std::error::Error + Send + Sync>::from("LINK_EXPIRED"),
                     ));
                 }
 
+                // Precisamos do user_id do pai para amarrar o device filho
+                // e o device_token. O filho NUNCA tem user_id próprio —
+                // compartilha o do pai via `user_id` em `devices`.
                 let parent_user_id: String = tx.query_row(
                     "SELECT user_id FROM devices WHERE id = ?1",
                     params![parent_device_id],
                     |r| r.get(0),
                 )?;
 
+                // (b) Cria device filho (is_child = 1, forçado pelo servidor).
                 let child_device_id = Uuid::new_v4().to_string();
                 tx.execute(
                     "INSERT INTO devices(id, user_id, device_name, platform, is_child)
@@ -218,6 +292,9 @@ pub async fn confirm_link(
                     ],
                 )?;
 
+                // (c) Marca o link como 'active' e registra o filho vinculado.
+                // Isso também tira o link do índice UNIQUE parcial de pending,
+                // liberando o code para reúso se um dia isso for necessário.
                 tx.execute(
                     "UPDATE parental_links
                      SET child_device_id = ?1, status = 'active'
@@ -225,6 +302,8 @@ pub async fn confirm_link(
                     params![child_device_id, link_id],
                 )?;
 
+                // (d) Persiste o hash do token. NÃO guardamos o plain —
+                // se o banco vazar, o atacante não consegue autenticar.
                 tx.execute(
                     "INSERT INTO device_tokens(token_hash, device_id, user_id)
                      VALUES (?1, ?2, ?3)",
@@ -238,6 +317,7 @@ pub async fn confirm_link(
         })
         .await;
 
+    // Tradução dos sentinelas para HTTP errors claros.
     let (child_device_id, parent_user_id, parent_device_id) = result.map_err(|e| {
         let msg = e.to_string();
         if msg.contains("LINK_NOT_FOUND") {
@@ -250,6 +330,8 @@ pub async fn confirm_link(
     })?;
 
     Ok(ConfirmLinkResponse {
+        // Prefixo "dt_" é o que o middleware usa para rotear: sem ele,
+        // o token seria interpretado como Firebase JWT e falharia.
         device_token: format!("dt_{}", plain_token),
         device_id: child_device_id,
         user_id: parent_user_id,

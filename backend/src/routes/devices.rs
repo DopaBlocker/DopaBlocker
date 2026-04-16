@@ -1,3 +1,27 @@
+// =============================================================================
+// Rotas de devices — /devices/register, /devices, /devices/link/*
+// =============================================================================
+// Esta é a parte mais delicada do backend, porque mistura rotas protegidas
+// com uma rota PÚBLICA: `/devices/link/confirm`.
+//
+// Por que `confirm` é pública? Porque quem chama é o app do FILHO, que ainda
+// não tem credencial nenhuma. O fluxo é:
+//
+//   1. Pai (logado via Firebase) chama POST /devices/link/generate e recebe
+//      um código de 6 dígitos válido por 5 minutos.
+//   2. Pai lê o código em voz alta (ou mostra na tela) para o filho.
+//   3. Filho digita o código no app do celular/desktop dele e chama
+//      POST /devices/link/confirm com (code, device_name, platform).
+//   4. Backend valida o código, cria um device filho, gera um Device Token
+//      e devolve em PLAIN TEXT no response.
+//   5. Filho salva o token em secure storage. Dali em diante, suas
+//      requisições carregam `Authorization: Bearer dt_<token>`.
+//
+// Sem essa rota pública não haveria como o filho autenticar a primeira vez.
+// Por isso ela está em `public_router()` separado, que `main.rs` monta fora
+// do grupo coberto por `require_auth`.
+// =============================================================================
+
 use axum::{
     extract::State,
     routing::{get, post},
@@ -13,7 +37,8 @@ use crate::models::{
 use crate::services::device_service;
 use crate::AppState;
 
-/// Rotas de devices que exigem autenticação (JWT ou Device Token).
+/// Rotas que exigem JWT Firebase OU Device Token (GET apenas).
+/// Montadas em `main.rs` via `.nest("/devices", ...)`.
 pub fn protected_router() -> Router<AppState> {
     Router::new()
         .route("/register", post(register_device))
@@ -21,11 +46,17 @@ pub fn protected_router() -> Router<AppState> {
         .route("/link/generate", post(generate_link_code))
 }
 
-/// Rotas públicas: apenas /devices/link/confirm (filho ainda não tem credencial).
+/// Rota pública — apenas `/devices/link/confirm`. Note que aqui o path é
+/// ABSOLUTO (não faz nest), porque `main.rs` faz `.merge()` deste router
+/// no Router raiz, e precisamos do path completo.
 pub fn public_router() -> Router<AppState> {
     Router::new().route("/devices/link/confirm", post(confirm_link))
 }
 
+/// `POST /devices/register` — registra um device DO PAI (is_child=false,
+/// forçado no service). Um pai pode ter múltiplos devices (notebook de casa,
+/// celular, PC do trabalho). Device do filho NUNCA é criado por esta rota —
+/// só via `confirm_link`.
 async fn register_device(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -35,6 +66,9 @@ async fn register_device(
     Ok(Json(device))
 }
 
+/// `GET /devices` — lista devices do user. Como `user_id` no banco é sempre
+/// o do pai (mesmo para device filho), isso retorna TODOS os devices da
+/// "família" — úteis para a tela "meus aparelhos vinculados".
 async fn list_devices(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -43,7 +77,10 @@ async fn list_devices(
     Ok(Json(devices))
 }
 
-/// Apenas contas Firebase (pai) podem gerar códigos. Device tokens são rejeitados.
+/// `POST /devices/link/generate` — gera um código de 6 dígitos para vincular
+/// device filho. Só aceita Firebase (pai real). Se um device filho (Device
+/// Token) tentar chamar, o middleware já barra com 403 — aqui é redundância
+/// defensiva em caso de refactor futuro que afrouxe a regra geral.
 async fn generate_link_code(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -57,6 +94,11 @@ async fn generate_link_code(
     Ok(Json(resp))
 }
 
+/// `POST /devices/link/confirm` — ROTA PÚBLICA. Input: (code, device_name,
+/// platform). Output: um device filho criado + um Device Token em plain text.
+/// O token só aparece AQUI, uma vez na vida: depois, o banco guarda só o
+/// hash SHA-256. Se o app do filho perder o token, precisa recomeçar o
+/// fluxo (pai gera novo código).
 async fn confirm_link(
     State(state): State<AppState>,
     Json(payload): Json<ConfirmLinkRequest>,

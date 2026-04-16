@@ -1,3 +1,24 @@
+// =============================================================================
+// user_service — CRUD mínimo da tabela `users`.
+// =============================================================================
+// Responsabilidades:
+//   - Criar user local correspondente a um Firebase UID recém-registrado.
+//   - Buscar user pelo `firebase_uid` (usado em /auth/login e no middleware).
+//   - Buscar user pelo `id` interno (usado em /auth/me e outros handlers).
+//
+// Convenções deste módulo:
+//   - Recebemos parâmetros como `String` (consumindo o dado) porque as
+//     closures passadas a `db.call()` precisam ser `'static` — ou seja,
+//     não podem capturar referências ao escopo do handler. A cópia é barata
+//     em comparação com a round-trip ao SQLite.
+//   - `BlockMode` é persistido como texto ("personal"/"parental") para
+//     legibilidade direta no banco (inspeção via CLI). As conversões
+//     ficam nos helpers `*_to_str`/`str_to_*` neste arquivo.
+//   - Erros de SQL (incluindo UNIQUE constraint do `firebase_uid`) viram
+//     `AppError::Conflict` quando vêm de `create_user` — o caller sabe
+//     traduzir para HTTP 409.
+// =============================================================================
+
 use rusqlite::{params, OptionalExtension};
 use tokio_rusqlite::Connection;
 use uuid::Uuid;
@@ -5,6 +26,9 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::models::{BlockMode, User};
 
+// Conversão enum ↔ string para persistência. Usar números (0/1) seria mais
+// compacto mas quebraria inspeção manual via sqlite3 CLI e exigiria
+// migration se adicionássemos um terceiro modo no futuro.
 fn block_mode_to_str(mode: &BlockMode) -> &'static str {
     match mode {
         BlockMode::Personal => "personal",
@@ -12,6 +36,9 @@ fn block_mode_to_str(mode: &BlockMode) -> &'static str {
     }
 }
 
+// Qualquer valor inesperado vira `Personal` (mais seguro — o modo menos
+// privilegiado). Dado que o backend é o único escritor, isso só acontece
+// se alguém mexer no .db manualmente.
 fn str_to_block_mode(s: &str) -> BlockMode {
     match s {
         "parental" => BlockMode::Parental,
@@ -19,6 +46,10 @@ fn str_to_block_mode(s: &str) -> BlockMode {
     }
 }
 
+/// INSERT + SELECT: primeiro insere, depois lê de volta para garantir que
+/// os defaults do banco (como `created_at DEFAULT CURRENT_TIMESTAMP`)
+/// estão refletidos no struct retornado. Alternativa seria usar RETURNING,
+/// mas o SQLite só suporta a partir de 3.35 e queremos máxima portabilidade.
 pub async fn create_user(
     db: &Connection,
     firebase_uid: String,
@@ -28,6 +59,9 @@ pub async fn create_user(
 ) -> Result<User, AppError> {
     let id = Uuid::new_v4().to_string();
     let mode_str = block_mode_to_str(&mode).to_string();
+
+    // Clones porque o closure precisa ser `move` e `'static` — o original
+    // pode ser reutilizado depois do `.await` (ex: no get_user_by_firebase_uid).
     let id_clone = id.clone();
     let firebase_uid_clone = firebase_uid.clone();
     let email_clone = email.clone();
@@ -48,6 +82,9 @@ pub async fn create_user(
         Ok(())
     })
     .await
+    // Se `firebase_uid` já existe, o UNIQUE dá erro aqui e vira 409.
+    // (O handler de /auth/register faz a checagem antes, então isso só
+    // aciona em corrida de requests concorrentes.)
     .map_err(|e| AppError::Conflict(format!("Falha ao criar usuário: {e}")))?;
 
     get_user_by_firebase_uid(db, firebase_uid)
@@ -55,6 +92,8 @@ pub async fn create_user(
         .ok_or_else(|| AppError::InternalServerError("User recém-criado não encontrado".into()))
 }
 
+/// Usado por /auth/login e pelo middleware para resolver Firebase UID → user_id.
+/// Retorna `Ok(None)` quando não existe — o caller decide se isso é 404 ou não.
 pub async fn get_user_by_firebase_uid(
     db: &Connection,
     firebase_uid: String,
@@ -76,6 +115,8 @@ pub async fn get_user_by_firebase_uid(
                     })
                 },
             )
+            // `.optional()` converte "NoRows" em `Ok(None)` — queremos
+            // distinguir "erro real" de "não achou" no caller.
             .optional()?;
         Ok(r)
     })
@@ -83,6 +124,9 @@ pub async fn get_user_by_firebase_uid(
     .map_err(|e| AppError::InternalServerError(e.to_string()))
 }
 
+/// Usado por /auth/me. Diferente do `by_firebase_uid`, aqui "não achou" é
+/// sempre um erro 404 — se o middleware injetou `auth.user_id`, o user
+/// deveria existir; se sumiu, algo muito errado aconteceu.
 pub async fn get_user_by_id(db: &Connection, user_id: String) -> Result<User, AppError> {
     db.call(move |c| {
         let r = c
