@@ -35,7 +35,7 @@ use crate::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_items).post(add_item))
-        .route("/:id", delete(delete_item))
+        .route("/{id}", delete(delete_item))
         .route("/adult-filter", put(set_adult_filter))
 }
 
