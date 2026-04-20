@@ -98,3 +98,38 @@ cargo check
 ```
 
 A API será exposta por padrão na porta `3000` (conforme definido pelo seu `config.rs`), acessível primordialmente via `http://localhost:3000/`.
+
+---
+
+## 🔐 Setup do SQLCipher e OpenSSL (Especial para Windows)
+
+O banco de dados utiliza a crate `rusqlite` com a feature `bundled-sqlcipher` para garantir a criptografia AES-256 do arquivo `.db`. O SQLCipher exige o **OpenSSL** para compilar, o que requer uma configuração especial no ambiente Windows.
+
+### Passo a passo com `vcpkg`:
+1. Clone o `vcpkg` dentro da pasta do seu projeto (ou numa pasta geral de ferramentas) e instale-o:
+   ```powershell
+   git clone https://github.com/microsoft/vcpkg.git
+   cd vcpkg
+   .\bootstrap-vcpkg.bat
+   ```
+2. Baixe e compile o OpenSSL via vcpkg:
+   ```powershell
+   .\vcpkg install openssl:x64-windows
+   ```
+3. Antes de compilar o backend em Rust, defina as Variáveis de Ambiente no terminal apontando para a instalação do OpenSSL:
+   ```powershell
+   $env:OPENSSL_DIR="c:\<seu-caminho-ate-o-projeto>\vcpkg\installed\x64-windows"
+   $env:OPENSSL_NO_VENDOR="1"
+   ```
+4. **Lidando com o erro de DLL (STATUS_DLL_NOT_FOUND):** Como a biblioteca compilada é dinâmica, o binário final precisa saber onde as DLLs do OpenSSL estão na hora da execução. Para isso, você pode adicionar a pasta `bin` temporariamente ao seu `PATH`:
+   ```powershell
+   $env:PATH += ";c:\<seu-caminho-ate-o-projeto>\vcpkg\installed\x64-windows\bin"
+   cargo run --bin dopablocker-backend
+   ```
+   *(Alternativa Permanente: Copiar e colar os arquivos `libcrypto-3-x64.dll` e `libssl-3-x64.dll` diretamente para a sua pasta `target/debug/` do projeto).*
+
+---
+
+## 📝 Changelog Recente
+
+- **Atualização do Axum (Compatibilidade v0.7 / v0.8):** A sintaxe de definição de captura de parâmetros (path variables) sofreu *breaking changes*. Rotas definidas anteriormente como `/:id` foram corrigidas para a nova especificação baseada em chaves `/{id}` no arquivo `src/routes/blocklist.rs` para prevenir panics na inicialização do servidor.
