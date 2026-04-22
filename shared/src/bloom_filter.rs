@@ -68,14 +68,52 @@ impl BloomFilter {
 
     pub fn contains(&self, item: &str) -> bool {
         let positions = get_positions(item, self.num_hashes, self.bit_array.len());
-        let mut all_positions = true;
-        for pos in &positions {
-            if !self.bit_array[*pos] {
-                all_positions = false;
+        positions.iter().all(|&pos| self.bit_array[pos])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_then_contains_returns_true() {
+        let mut bf = BloomFilter::new(1_000, 0.001);
+        bf.insert("pornhub.com");
+        bf.insert("xvideos.com");
+        assert!(bf.contains("pornhub.com"));
+        assert!(bf.contains("xvideos.com"));
+    }
+
+    #[test]
+    fn contains_returns_false_for_absent_item() {
+        let mut bf = BloomFilter::new(1_000, 0.001);
+        bf.insert("pornhub.com");
+        assert!(!bf.contains("google.com"));
+        assert!(!bf.contains("youtube.com"));
+    }
+
+    #[test]
+    fn empty_filter_contains_nothing() {
+        let bf = BloomFilter::new(100, 0.01);
+        assert!(!bf.contains("anything.com"));
+    }
+
+    #[test]
+    fn false_positive_rate_stays_within_budget() {
+        // Insere 1k itens e confere se ≤ 2% dos 10k "estranhos" dão falso positivo.
+        // Budget generoso (2× do alvo 1%) para evitar flakes com hash FNV simples.
+        let mut bf = BloomFilter::new(1_000, 0.01);
+        for i in 0..1_000 {
+            bf.insert(&format!("inserted-{i}.com"));
+        }
+        let mut fps = 0;
+        for i in 0..10_000 {
+            if bf.contains(&format!("stranger-{i}.net")) {
+                fps += 1;
             }
-        } 
-        all_positions
-            
+        }
+        assert!(fps < 200, "false positives = {fps} (>= 2% de 10k)");
     }
 }
 

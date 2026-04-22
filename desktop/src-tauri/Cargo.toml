@@ -24,3 +24,11 @@ log = "0.4"
 tauri = { version = "2.10.3" }
 tauri-plugin-log = "2"
 dopablocker-shared = { path = "../../shared" }
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher"] }
+tokio-rusqlite = "0.6"
+uuid = { version = "1", features = ["v4"] }
+thiserror = "1"
+keyring = { version = "3", features = ["windows-native"] }
+rand = "0.8"
+tracing = "0.1"
