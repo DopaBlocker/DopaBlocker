@@ -318,6 +318,17 @@ pub async fn get_adult_filter_enabled(conn: &Connection) -> DbResult<bool> {
         .unwrap_or(false))
 }
 
+/// Lembra qual usuário estava ativo na última vez que o engine foi ligado.
+/// O `lib.rs::setup` usa isso para reativar o engine no boot — sem esse
+/// pointer, a gente não saberia de qual user carregar as regras.
+pub async fn set_last_active_user_id(conn: &Connection, user_id: String) -> DbResult<()> {
+    set_state(conn, "last_active_user_id", user_id).await
+}
+
+pub async fn get_last_active_user_id(conn: &Connection) -> DbResult<Option<String>> {
+    get_state(conn, "last_active_user_id").await
+}
+
 // -------- helpers ------------------------------------------------------------
 
 fn type_to_str(t: &BlockedType) -> &'static str {

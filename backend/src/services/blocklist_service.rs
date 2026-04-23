@@ -26,6 +26,8 @@ use rusqlite::params;
 use tokio_rusqlite::Connection;
 use uuid::Uuid;
 
+use dopablocker_shared::domain_matcher::normalize_domain;
+
 use crate::errors::AppError;
 use crate::models::{AdultFilterSettings, BlockedItem, BlockedType, CreateBlockedItemRequest};
 
@@ -62,10 +64,26 @@ pub async fn add_item(
 ) -> Result<BlockedItem, AppError> {
     let id = Uuid::new_v4().to_string();
     let item_type = item_type_to_str(&payload.item_type).to_string();
-    let value = payload.value.trim().to_lowercase();
+
+    // Normalização dependente do tipo. Domínios passam pela mesma função que
+    // o DNS proxy usa na hora de casar a query — `http://www.X.com/path`,
+    // `X.COM` e `x.com` viram todos `x.com`. Sem isso, defesa-em-profundidade
+    // falha: um POST direto no backend com `Instagram.COM` seria salvo com
+    // maiúsculas e o proxy (que lowercase a query) nunca daria match.
+    let value = match payload.item_type {
+        BlockedType::Domain => normalize_domain(&payload.value),
+        _ => payload.value.trim().to_lowercase(),
+    };
 
     if value.is_empty() {
         return Err(AppError::BadRequest("value não pode ser vazio".into()));
+    }
+
+    // Sanity check pós-normalização: domínio sem TLD não é domínio.
+    if matches!(payload.item_type, BlockedType::Domain) && !value.contains('.') {
+        return Err(AppError::BadRequest(
+            "domínio deve conter pelo menos um ponto (ex: instagram.com)".into(),
+        ));
     }
 
     // Clones para a closure `'static` (ver comentário em user_service).

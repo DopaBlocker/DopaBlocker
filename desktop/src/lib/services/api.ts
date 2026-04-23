@@ -1,4 +1,84 @@
-// Cliente HTTP para a API REST do backend.
-// Implementar: classe/funções com baseUrl configurável, métodos GET/POST/PUT/DELETE,
-// interceptor para adicionar Firebase JWT no header Authorization,
-// tratamento de erros padronizado, retry em caso de token expirado.
+// Cliente HTTP para o backend Axum. Responsabilidades:
+//   1. Injetar o Firebase JWT em `Authorization: Bearer ...` em cada request.
+//   2. Retry single-shot em 401 (token possivelmente expirado) após refresh.
+//   3. Parsear erros do formato `{ "error": "..." }` e expor via `ApiError`.
+//   4. Tipar retornos com base em `types.ts`.
+
+import { getIdToken } from './firebase';
+import type {
+    AdultFilterSettings,
+    BlockMode,
+    BlockedItem,
+    CreateBlockedItemRequest,
+    User,
+} from '../types';
+
+const BASE_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+
+export class ApiError extends Error {
+    constructor(
+        public status: number,
+        message: string,
+    ) {
+        super(message);
+        this.name = 'ApiError';
+    }
+}
+
+async function request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    retriedOnce = false,
+): Promise<T> {
+    const token = await getIdToken();
+    const headers: Record<string, string> = {};
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch(`${BASE_URL}${path}`, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+
+    if (res.status === 401 && !retriedOnce && token) {
+        await getIdToken(true);
+        return request<T>(method, path, body, true);
+    }
+
+    if (!res.ok) {
+        const text = await res.text();
+        let msg = text || res.statusText;
+        try {
+            const parsed = JSON.parse(text);
+            if (typeof parsed?.error === 'string') msg = parsed.error;
+        } catch {
+            /* corpo não-JSON, usa text cru */
+        }
+        throw new ApiError(res.status, msg);
+    }
+
+    if (res.status === 204) return undefined as T;
+    return res.json() as Promise<T>;
+}
+
+export const api = {
+    register: (payload: { email: string; display_name: string; mode: BlockMode }) =>
+        request<User>('POST', '/auth/register', payload),
+
+    login: () => request<User>('POST', '/auth/login'),
+
+    me: () => request<User>('GET', '/auth/me'),
+
+    listBlocklist: () => request<BlockedItem[]>('GET', '/blocklist'),
+
+    createBlockedItem: (payload: CreateBlockedItemRequest) =>
+        request<BlockedItem>('POST', '/blocklist', payload),
+
+    deleteBlockedItem: (id: string) =>
+        request<{ message: string }>('DELETE', `/blocklist/${id}`),
+
+    setAdultFilter: (enabled: boolean) =>
+        request<AdultFilterSettings>('PUT', '/blocklist/adult-filter', { enabled }),
+};

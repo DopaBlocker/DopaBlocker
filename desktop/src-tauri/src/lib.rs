@@ -3,17 +3,25 @@
 // =============================================================================
 // No setup:
 //   1. Registra o plugin de log em debug.
-//   2. Inicializa o SQLCipher local (via db::init) e registra a Connection
-//      como state — qualquer comando pode pegar via `State<'_, Connection>`.
-//   3. O engine de bloqueio (DNS + WFP + adult filter) será inicializado aqui
-//      nas etapas 6-9, também como state.
+//   2. Inicializa o SQLCipher local (db::init) e registra a Connection
+//      como state — qualquer comando pega via `State<'_, Connection>`.
+//   3. Cria o Engine de bloqueio em estado parado e registra como state
+//      (dentro de Arc<Mutex<_>> pra permitir o resume assíncrono).
+//   4. Se `blocking_enabled=true` estava persistido, spawna uma task que
+//      reativa o engine com as regras do último user — UX "abriu o app e
+//      continua bloqueando sem ter que clicar de novo".
 // =============================================================================
 
 mod blocking;
 mod commands;
 mod db;
 
+use std::sync::Arc;
+
 use tauri::Manager;
+use tokio::sync::Mutex;
+
+use blocking::engine::Engine;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -27,12 +35,26 @@ pub fn run() {
                 )?;
             }
 
-            // Boot síncrono do DB — só roda uma vez na subida do app, antes
-            // da janela abrir. `block_on` aqui é aceitável porque nada
-            // depende de assíncrono concorrente neste momento.
+            // Boot síncrono do DB — só roda uma vez, antes da janela abrir.
             let handle = app.handle().clone();
             let conn = tauri::async_runtime::block_on(async move { db::init(&handle).await })?;
+
+            let engine = Arc::new(Mutex::new(Engine::new()));
+
+            // Resume do engine em background. Não bloqueia o setup — se falhar
+            // (sem admin pra porta 53, por ex.), o usuário vê a UI com estado
+            // correto e pode tentar de novo. Usamos clones pra não prender a
+            // conexão/engine originais aqui.
+            let conn_resume = conn.clone();
+            let engine_resume = engine.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = resume_engine_if_enabled(&conn_resume, &engine_resume).await {
+                    tracing::warn!(error = %e, "não foi possível reativar engine no boot");
+                }
+            });
+
             app.manage(conn);
+            app.manage(engine);
 
             Ok(())
         })
@@ -48,4 +70,27 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+async fn resume_engine_if_enabled(
+    conn: &tokio_rusqlite::Connection,
+    engine: &Mutex<Engine>,
+) -> anyhow::Result<()> {
+    if !db::get_blocking_enabled(conn).await? {
+        return Ok(());
+    }
+    let Some(user_id) = db::get_last_active_user_id(conn).await? else {
+        tracing::info!("flag blocking_enabled=true mas sem last_active_user_id — pulando resume");
+        return Ok(());
+    };
+    let rules = db::list_active_domains(conn, user_id.clone()).await?;
+    let mut eng = engine.lock().await;
+    if eng.is_running() {
+        return Ok(());
+    }
+    eng.start(rules)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    tracing::info!(%user_id, "engine reativado no boot");
+    Ok(())
 }
