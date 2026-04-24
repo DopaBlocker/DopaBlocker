@@ -54,6 +54,25 @@ export interface RegisterRequest {
     email: string;
     display_name: string;
     mode: BlockMode;
+    email_verification_token?: string;
+}
+
+export interface EmailCodeStartRequest {
+    email: string;
+}
+
+export interface EmailCodeStartResponse {
+    expires_at: string;
+    resend_after_seconds: number;
+}
+
+export interface EmailCodeVerifyRequest {
+    email: string;
+    code: string;
+}
+
+export interface EmailCodeVerifyResponse {
+    email_verification_token: string;
 }
 
 export interface CreateBlockedItemRequest {

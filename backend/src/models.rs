@@ -48,6 +48,34 @@ pub struct RegisterRequest {
     pub email: String,
     pub display_name: String,
     pub mode: BlockMode, // Personal ou Parental — escolhido na tela inicial.
+    #[serde(default)]
+    pub email_verification_token: Option<String>,
+}
+
+/// Body de `POST /auth/email-code/start`.
+#[derive(Debug, Deserialize)]
+pub struct EmailCodeStartRequest {
+    pub email: String,
+}
+
+/// Resposta de `POST /auth/email-code/start`.
+#[derive(Debug, Serialize)]
+pub struct EmailCodeStartResponse {
+    pub expires_at: String,
+    pub resend_after_seconds: i64,
+}
+
+/// Body de `POST /auth/email-code/verify`.
+#[derive(Debug, Deserialize)]
+pub struct EmailCodeVerifyRequest {
+    pub email: String,
+    pub code: String,
+}
+
+/// Resposta de `POST /auth/email-code/verify`.
+#[derive(Debug, Serialize)]
+pub struct EmailCodeVerifyResponse {
+    pub email_verification_token: String,
 }
 
 // ---- Blocklist ----
@@ -107,9 +135,9 @@ pub struct ConfirmLinkResponse {
     /// Formato: "dt_<plain_token>". O prefixo "dt_" é o que o middleware
     /// usa para decidir entre JWT e Device Token.
     pub device_token: String,
-    pub device_id: String,         // id do device filho recém-criado
-    pub user_id: String,           // id do user do PAI (filhos não têm user próprio)
-    pub parent_device_id: String,  // id do device que gerou o código
+    pub device_id: String,        // id do device filho recém-criado
+    pub user_id: String,          // id do user do PAI (filhos não têm user próprio)
+    pub parent_device_id: String, // id do device que gerou o código
 }
 
 // ---- Respostas utilitárias ----

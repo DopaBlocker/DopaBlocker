@@ -7,9 +7,13 @@
 import { getIdToken } from './firebase';
 import type {
     AdultFilterSettings,
-    BlockMode,
     BlockedItem,
     CreateBlockedItemRequest,
+    EmailCodeStartRequest,
+    EmailCodeStartResponse,
+    EmailCodeVerifyRequest,
+    EmailCodeVerifyResponse,
+    RegisterRequest,
     User,
 } from '../types';
 
@@ -81,7 +85,13 @@ async function request<T>(
 }
 
 export const api = {
-    register: (payload: { email: string; display_name: string; mode: BlockMode }) =>
+    startEmailVerification: (payload: EmailCodeStartRequest) =>
+        request<EmailCodeStartResponse>('POST', '/auth/email-code/start', payload),
+
+    verifyEmailCode: (payload: EmailCodeVerifyRequest) =>
+        request<EmailCodeVerifyResponse>('POST', '/auth/email-code/verify', payload),
+
+    register: (payload: RegisterRequest) =>
         request<User>('POST', '/auth/register', payload),
 
     login: () => request<User>('POST', '/auth/login'),

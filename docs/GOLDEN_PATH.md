@@ -38,6 +38,7 @@ cargo run
 Starting DopaBlocker Backend...
 Migration aplicada migration="001_initial"
 Migration aplicada migration="002_parental_fixes"
+Migration aplicada migration="003_email_verification"
 Listening on 0.0.0.0:3000
 ```
 - [ ] Backend em `:3000` sem erro.
@@ -56,7 +57,10 @@ pnpm tauri:dev
 - [ ] Aba "Cadastrar" exibe os 3 cards (Pessoal, Pais, Filhos)
 - [ ] Cards "Pais" e "Filhos" têm badge "Em breve"
 - [ ] Clicar em "Pais" ou "Filhos" com form vazio mostra banner "Esse modo chega na v0.2"
-- [ ] Preencher nome, email, senha e clicar "Pessoal" → cria conta e redireciona para dashboard
+- [ ] Preencher nome, email, senha e confirmação de senha diferentes → mostra erro de senha
+- [ ] Preencher nome, email, senha e confirmação iguais e clicar "Pessoal" → envia código por email
+- [ ] Digitar código inválido → mostra erro sem criar usuário
+- [ ] Digitar código correto → cria conta Firebase, cria usuário local e redireciona para dashboard
 - [ ] No backend, log `INFO User created ...` aparece
 
 ### 4. Onboarding de primeira execução
@@ -103,14 +107,36 @@ curl.exe -X POST http://localhost:3000/blocklist `
 - [ ] Toast "Bloqueio ativado"
 - [ ] Status vira verde "Ativo"
 - [ ] Em outro terminal: `ipconfig /all` mostra DNS da interface ativa = `127.0.0.1`
-- [ ] `nslookup instagram.com` (sem especificar servidor) → NXDOMAIN
+- [ ] `nslookup instagram.com` (sem especificar servidor) → `127.0.0.1`
 - [ ] `nslookup google.com` → resolve IP real
 - [ ] `nslookup instagram.com 8.8.8.8` → **timeout** (WFP bloqueia DNS fora do proxy)
 - [ ] `netsh wfp show state` — arquivo XML gerado contém "DopaBlocker" nos filtros
 
+### 9.1 Instalação da CA local
+- [ ] Primeiro ativar: log `"CA instalada no Windows Root store"` ou `"CA já presente no Windows Root store"`
+- [ ] `certutil -store Root | findstr DopaBlocker` mostra o certificado raiz do DopaBlocker
+- [ ] O log inclui o thumbprint da CA local
+
+### 9.2 Bloqueio HTTPS
+- [ ] `https://instagram.com` no Chrome/Edge/Brave → página do DopaBlocker
+- [ ] Página mostra `instagram.com` e "Na sua lista de bloqueios"
+- [ ] Barra de URL não mostra aviso vermelho de certificado
+- [ ] `netstat -an | findstr :443` mostra `127.0.0.1:443` em LISTENING enquanto o engine está ativo
+
+### 9.3 HTTPS via filtro adulto
+- [ ] Toggle "Filtro de conteúdo adulto" → ON
+- [ ] `https://pornhub.com` no Chrome/Edge/Brave → página do DopaBlocker
+- [ ] Página mostra `pornhub.com` e "Filtro de conteúdo adulto"
+
+### 9.4 HTTP ainda funciona
+- [ ] `http://xvideos.com` → página do DopaBlocker
+
+### 9.5 Firefox (limitação conhecida)
+- [ ] Firefox pode mostrar erro de certificado porque usa NSS em vez do Windows Root store
+
 ### 10. Hot reload da blocklist
 - [ ] Com bloqueio ativo, adicionar `youtube.com`
-- [ ] `nslookup m.youtube.com` (subdomínio!) → NXDOMAIN imediato (sem precisar toggle off/on)
+- [ ] `nslookup m.youtube.com` (subdomínio!) → `127.0.0.1` imediato (sem precisar toggle off/on)
 - [ ] Remover `youtube.com` pela UI → `nslookup m.youtube.com` volta a resolver
 
 ### 11. Filtro adulto
@@ -118,8 +144,8 @@ curl.exe -X POST http://localhost:3000/blocklist `
 - [ ] Na primeira vez, badge "Construindo…" aparece por alguns segundos
 - [ ] Após construir, badge some
 - [ ] Toast "Filtro adulto ligado"
-- [ ] `nslookup pornhub.com` → NXDOMAIN
-- [ ] `nslookup m.pornhub.com` → NXDOMAIN (walk label-por-label funciona)
+- [ ] `nslookup pornhub.com` → `127.0.0.1`
+- [ ] `nslookup m.pornhub.com` → `127.0.0.1` (walk label-por-label funciona)
 - [ ] Toggle → OFF → `nslookup pornhub.com` resolve normalmente
 
 ### 12. Desativar bloqueio
@@ -160,13 +186,13 @@ curl.exe -X POST http://localhost:3000/blocklist `
 ## Testes automatizados (existentes)
 
 ```powershell
-cargo test --workspace         # 18 testes: shared (13) + desktop (5)
+cargo test --workspace         # 37 testes: backend (4) + desktop (20) + shared (13)
 pnpm --filter desktop check     # svelte-check: 0 errors, 0 warnings
 ```
 
 **Cobertura atual:**
 - `shared`: Bloom filter (insert/contains/FP-rate), domain_matcher (normalize/extract/is_blocked)
-- `desktop`: system_dns parser (EN/PT), adult_filter parser (hosts file), flag enabled
+- `desktop`: system_dns parser (EN/PT/IPv6), adult_filter parser, block_reason, block_page render, CA local e cache SNI
 
 **Gaps automatizados:** ver [GAPS.md](GAPS.md) seção "Observability & Testing".
 

@@ -217,11 +217,7 @@ pub async fn confirm_link(
     let platform_str = platform_to_str(&payload.platform).to_string();
     let now_iso = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-    let plain_token = format!(
-        "{}{}",
-        Uuid::new_v4().simple(),
-        Uuid::new_v4().simple()
-    );
+    let plain_token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let token_hash = hash_device_token(&plain_token);
 
     let result = db
@@ -255,9 +251,11 @@ pub async fn confirm_link(
                 let (link_id, parent_device_id, expires_at) = match link {
                     Some(v) => v,
                     None => {
-                        return Err(tokio_rusqlite::Error::Other(
-                            Box::<dyn std::error::Error + Send + Sync>::from("LINK_NOT_FOUND"),
-                        ));
+                        return Err(tokio_rusqlite::Error::Other(Box::<
+                            dyn std::error::Error + Send + Sync,
+                        >::from(
+                            "LINK_NOT_FOUND"
+                        )));
                     }
                 };
 
@@ -265,9 +263,11 @@ pub async fn confirm_link(
                 // como comparação cronológica — propriedade garantida pelo
                 // formato fixed-width com zero-padding (ano, mês, dia…).
                 if expires_at.as_str() < now_iso.as_str() {
-                    return Err(tokio_rusqlite::Error::Other(
-                        Box::<dyn std::error::Error + Send + Sync>::from("LINK_EXPIRED"),
-                    ));
+                    return Err(tokio_rusqlite::Error::Other(Box::<
+                        dyn std::error::Error + Send + Sync,
+                    >::from(
+                        "LINK_EXPIRED"
+                    )));
                 }
 
                 // Precisamos do user_id do pai para amarrar o device filho
@@ -284,12 +284,7 @@ pub async fn confirm_link(
                 tx.execute(
                     "INSERT INTO devices(id, user_id, device_name, platform, is_child)
                      VALUES (?1, ?2, ?3, ?4, 1)",
-                    params![
-                        child_device_id,
-                        parent_user_id,
-                        device_name,
-                        platform_str
-                    ],
+                    params![child_device_id, parent_user_id, device_name, platform_str],
                 )?;
 
                 // (c) Marca o link como 'active' e registra o filho vinculado.

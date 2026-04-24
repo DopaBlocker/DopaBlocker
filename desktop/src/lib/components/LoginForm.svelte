@@ -6,15 +6,23 @@
         authStore,
         type AuthState,
     } from '$lib/stores/auth';
+    import { api } from '$lib/services/api';
     import ModeSelector from './ModeSelector.svelte';
 
     type Tab = 'signin' | 'signup';
+    type SignupStep = 'form' | 'verify';
 
     let auth: AuthState = $state({ ...AUTH_BOOTING_STATE });
     let tab: Tab = $state('signin');
     let email = $state('');
     let password = $state('');
+    let confirmPassword = $state('');
     let displayName = $state('');
+    let signupStep: SignupStep = $state('form');
+    let verificationEmail = $state('');
+    let verificationCode = $state('');
+    let resendAvailableAt = $state(0);
+    let resendRemaining = $state(0);
     let formError: string | null = $state(null);
     let infoMessage: string | null = $state(null);
     let submitting = $state(false);
@@ -23,9 +31,12 @@
     const pendingLocalRegistration = $derived(auth.phase === 'pending_local_registration');
     const backendUnavailable = $derived(auth.phase === 'backend_unavailable');
     const firebaseIdentity = $derived(auth.firebase_user);
+    const pendingProviderSkipsCode = $derived(
+        pendingLocalRegistration && firebaseIdentity?.provider_id === 'google.com',
+    );
 
     onMount(() => {
-        return authStore.subscribe((state) => {
+        const unsubscribe = authStore.subscribe((state) => {
             auth = state;
 
             const shouldAdoptFirebaseIdentity =
@@ -51,6 +62,7 @@
             if (state.phase === 'pending_local_registration') {
                 tab = 'signup';
                 password = '';
+                confirmPassword = '';
                 infoMessage =
                     'Sua conta ja entrou no Firebase. Falta concluir o cadastro local para entrar no app.';
                 formError = state.error;
@@ -68,12 +80,43 @@
                 formError = state.error;
             }
         });
+
+        const timer = window.setInterval(refreshResendRemaining, 1000);
+        return () => {
+            unsubscribe();
+            window.clearInterval(timer);
+        };
     });
 
     function resetFeedback() {
         formError = null;
         infoMessage = null;
         authStore.clearError();
+    }
+
+    function resetVerificationStep() {
+        signupStep = 'form';
+        verificationEmail = '';
+        verificationCode = '';
+        resendAvailableAt = 0;
+        resendRemaining = 0;
+    }
+
+    function setResendCooldown(seconds: number) {
+        resendAvailableAt = Date.now() + seconds * 1000;
+        refreshResendRemaining();
+    }
+
+    function refreshResendRemaining() {
+        if (!resendAvailableAt) {
+            resendRemaining = 0;
+            return;
+        }
+
+        resendRemaining = Math.max(
+            0,
+            Math.ceil((resendAvailableAt - Date.now()) / 1000),
+        );
     }
 
     function switchTab(next: Tab) {
@@ -85,6 +128,7 @@
 
         tab = next;
         resetFeedback();
+        if (next === 'signin') resetVerificationStep();
     }
 
     async function handleSignIn(e: Event) {
@@ -128,16 +172,7 @@
         }
     }
 
-    async function handleModeSelect(mode: 'personal' | 'parent' | 'child') {
-        if (submitting) return;
-
-        resetFeedback();
-
-        if (mode !== 'personal') {
-            infoMessage = 'Esse modo chega na v0.2 - por ora so o Pessoal esta disponivel.';
-            return;
-        }
-
+    function resolveSignupIdentity() {
         const name =
             displayName.trim() ||
             firebaseIdentity?.display_name ||
@@ -147,31 +182,134 @@
 
         if (!mail) {
             formError = 'Nao conseguimos ler o email da sua sessao. Entre novamente.';
-            return;
+            return null;
         }
 
         if (!name) {
             formError = 'Preencha seu nome antes de continuar.';
-            return;
+            return null;
         }
 
         if (!pendingLocalRegistration && !password) {
             formError = 'Preencha nome, email e senha antes de escolher o modo.';
+            return null;
+        }
+
+        if (!pendingLocalRegistration && password.length < 6) {
+            formError = 'A senha precisa ter pelo menos 6 caracteres.';
+            return null;
+        }
+
+        if (!pendingLocalRegistration && !confirmPassword) {
+            formError = 'Confirme sua senha antes de continuar.';
+            return null;
+        }
+
+        if (!pendingLocalRegistration && password !== confirmPassword) {
+            formError = 'As senhas nao conferem.';
+            return null;
+        }
+
+        return { mail, name };
+    }
+
+    async function beginEmailVerification(mode: 'personal' | 'parent' | 'child') {
+        resetFeedback();
+
+        if (mode !== 'personal') {
+            infoMessage = 'Esse modo chega na v0.2 - por ora so o Pessoal esta disponivel.';
+            return;
+        }
+
+        const identity = resolveSignupIdentity();
+        if (!identity) return;
+
+        submitting = true;
+        try {
+            const response = await api.startEmailVerification({ email: identity.mail });
+            verificationEmail = identity.mail;
+            signupStep = 'verify';
+            setResendCooldown(response.resend_after_seconds);
+        } catch (err) {
+            formError = err instanceof Error ? err.message : String(err);
+        } finally {
+            submitting = false;
+        }
+    }
+
+    async function handleModeSelect(mode: 'personal' | 'parent' | 'child') {
+        if (submitting) return;
+        if (pendingProviderSkipsCode && mode === 'personal') {
+            resetFeedback();
+            const identity = resolveSignupIdentity();
+            if (!identity) return;
+
+            submitting = true;
+            try {
+                await authStore.completeLocalRegistration('personal', identity.name);
+            } catch (err) {
+                formError = err instanceof Error ? err.message : String(err);
+            } finally {
+                submitting = false;
+            }
+            return;
+        }
+
+        await beginEmailVerification(mode);
+    }
+
+    async function handleVerifyAndRegister(e?: Event) {
+        e?.preventDefault();
+        if (submitting) return;
+
+        resetFeedback();
+
+        const identity = resolveSignupIdentity();
+        if (!identity) return;
+
+        const code = verificationCode.trim();
+        if (!code) {
+            formError = 'Digite o codigo enviado por email.';
             return;
         }
 
         submitting = true;
         try {
+            const verified = await api.verifyEmailCode({
+                email: verificationEmail || identity.mail,
+                code,
+            });
+
             if (pendingLocalRegistration) {
-                await authStore.completeLocalRegistration('personal', name);
+                await authStore.completeLocalRegistration(
+                    'personal',
+                    identity.name,
+                    verified.email_verification_token,
+                );
             } else {
-                await authStore.register(mail, password, name, 'personal');
+                await authStore.register(
+                    verificationEmail || identity.mail,
+                    password,
+                    identity.name,
+                    'personal',
+                    verified.email_verification_token,
+                );
             }
         } catch (err) {
             formError = err instanceof Error ? err.message : String(err);
         } finally {
             submitting = false;
         }
+    }
+
+    async function handleResendCode() {
+        if (submitting || resendRemaining > 0) return;
+        await beginEmailVerification('personal');
+    }
+
+    function handleEditSignupEmail() {
+        resetFeedback();
+        resetVerificationStep();
     }
 
     async function handleUseAnotherAccount() {
@@ -183,7 +321,9 @@
             await authStore.logout();
             email = '';
             password = '';
+            confirmPassword = '';
             displayName = '';
+            resetVerificationStep();
         } finally {
             submitting = false;
         }
@@ -199,7 +339,7 @@
             <div class="h-4 w-4 rounded-sm bg-white/90"></div>
         </div>
         <div>
-            <h1 class="text-lg font-semibold tracking-tight text-text">DopaBlocker</h1>
+            <h1 class="text-lg font-semibold tracking-tight text-gradient">DopaBlocker</h1>
             <p class="mt-1 text-xs text-text-muted">
                 Bloqueie distracoes. Mantenha o foco.
             </p>
@@ -289,65 +429,126 @@
         <form
             class="flex flex-col gap-4"
             onsubmit={(e) => {
-                e.preventDefault();
-                void handleModeSelect('personal');
+                if (signupStep === 'verify') {
+                    void handleVerifyAndRegister(e);
+                } else {
+                    e.preventDefault();
+                    void handleModeSelect('personal');
+                }
             }}
         >
-            {#if pendingLocalRegistration}
+            {#if signupStep === 'verify'}
                 <div
                     class="rounded-md border border-secondary/50 bg-secondary/10 px-3 py-2 text-xs text-secondary"
                 >
-                    Seu login Firebase ja esta pronto. Falta criar o registro local desta maquina.
+                    Codigo enviado para {verificationEmail || email.trim()}.
                 </div>
-            {/if}
-
-            <label class="flex flex-col gap-1.5">
-                <span class="field-label">Nome</span>
-                <input
-                    type="text"
-                    required
-                    autocomplete="name"
-                    bind:value={displayName}
-                    class="input"
-                    placeholder="Seu nome"
-                />
-            </label>
-            <label class="flex flex-col gap-1.5">
-                <span class="field-label">Email</span>
-                <input
-                    type="email"
-                    required
-                    autocomplete="email"
-                    bind:value={email}
-                    class="input"
-                    placeholder="voce@exemplo.com"
-                    readonly={pendingLocalRegistration && !!firebaseIdentity?.email}
-                />
-            </label>
-
-            {#if !pendingLocalRegistration}
                 <label class="flex flex-col gap-1.5">
-                    <span class="field-label">Senha</span>
+                    <span class="field-label">Codigo de verificacao</span>
                     <input
-                        type="password"
+                        type="text"
                         required
-                        minlength={6}
-                        autocomplete="new-password"
-                        bind:value={password}
+                        inputmode="numeric"
+                        autocomplete="one-time-code"
+                        maxlength={6}
+                        pattern={'[0-9]{6}'}
+                        bind:value={verificationCode}
                         class="input"
-                        placeholder="Minimo 6 caracteres"
+                        placeholder="000000"
                     />
                 </label>
-            {/if}
-
-            <div class="mt-2">
-                <div class="field-label mb-2">
-                    {pendingLocalRegistration
-                        ? 'Escolha o modo local para concluir'
-                        : 'Escolha o modo'}
+                <button type="submit" disabled={submitting} class="btn-primary mt-2 w-full">
+                    {submitting ? 'Validando...' : 'Validar email e entrar'}
+                </button>
+                <div class="grid grid-cols-2 gap-2">
+                    <button
+                        type="button"
+                        onclick={handleResendCode}
+                        disabled={submitting || resendRemaining > 0}
+                        class="btn-secondary w-full justify-center"
+                    >
+                        {resendRemaining > 0
+                            ? `Reenviar em ${resendRemaining}s`
+                            : 'Reenviar codigo'}
+                    </button>
+                    <button
+                        type="button"
+                        onclick={handleEditSignupEmail}
+                        disabled={submitting}
+                        class="btn-ghost w-full justify-center"
+                    >
+                        Editar email
+                    </button>
                 </div>
-                <ModeSelector onselect={handleModeSelect} />
-            </div>
+            {:else}
+                {#if pendingLocalRegistration}
+                    <div
+                        class="rounded-md border border-secondary/50 bg-secondary/10 px-3 py-2 text-xs text-secondary"
+                    >
+                        Seu login Firebase ja esta pronto. Falta criar o registro local desta maquina.
+                    </div>
+                {/if}
+
+                <label class="flex flex-col gap-1.5">
+                    <span class="field-label">Nome</span>
+                    <input
+                        type="text"
+                        required
+                        autocomplete="name"
+                        bind:value={displayName}
+                        class="input"
+                        placeholder="Seu nome"
+                    />
+                </label>
+                <label class="flex flex-col gap-1.5">
+                    <span class="field-label">Email</span>
+                    <input
+                        type="email"
+                        required
+                        autocomplete="email"
+                        bind:value={email}
+                        class="input"
+                        placeholder="voce@exemplo.com"
+                        readonly={pendingLocalRegistration && !!firebaseIdentity?.email}
+                    />
+                </label>
+
+                {#if !pendingLocalRegistration}
+                    <label class="flex flex-col gap-1.5">
+                        <span class="field-label">Senha</span>
+                        <input
+                            type="password"
+                            required
+                            minlength={6}
+                            autocomplete="new-password"
+                            bind:value={password}
+                            class="input"
+                            placeholder="Minimo 6 caracteres"
+                        />
+                    </label>
+                    <label class="flex flex-col gap-1.5">
+                        <span class="field-label">Confirmar senha</span>
+                        <input
+                            type="password"
+                            required
+                            minlength={6}
+                            autocomplete="new-password"
+                            bind:value={confirmPassword}
+                            class="input"
+                            placeholder="Digite a senha novamente"
+                        />
+                    </label>
+                {/if}
+
+                <div class="mt-2">
+                    <div class="field-label mb-2">
+                        {pendingLocalRegistration
+                            ? 'Escolha o modo local para concluir'
+                            : 'Escolha o modo'}
+                    </div>
+                    <ModeSelector onselect={handleModeSelect} />
+                </div>
+            {/if}
         </form>
     {/if}
 

@@ -28,8 +28,8 @@ use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
-    IsCa, KeyPair, KeyUsagePurpose,
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
+    KeyPair, KeyUsagePurpose,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::sign::CertifiedKey;
@@ -116,6 +116,7 @@ impl LocalCa {
         &self.thumbprint_hex
     }
 
+    #[cfg(test)]
     pub fn cert_der(&self) -> &[u8] {
         &self.cert_der
     }
@@ -126,8 +127,7 @@ impl LocalCa {
     pub fn sign_leaf(&self, hostname: &str) -> Result<CertifiedKey> {
         let ca_key = KeyPair::from_pem(&self.key_pem).context("parse ca.key PEM")?;
         let ca_der = CertificateDer::from(self.cert_der.clone());
-        let ca_params =
-            CertificateParams::from_ca_cert_der(&ca_der).context("reparse ca.der")?;
+        let ca_params = CertificateParams::from_ca_cert_der(&ca_der).context("reparse ca.der")?;
         let ca_cert = ca_params
             .self_signed(&ca_key)
             .context("reconstruir Certificate da CA")?;
@@ -151,8 +151,7 @@ impl LocalCa {
             CertificateDer::from(leaf.der().to_vec()),
             CertificateDer::from(self.cert_der.clone()),
         ];
-        let key_der =
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
+        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
         let signing_key = rustls::crypto::ring::sign::any_ecdsa_type(&key_der)
             .map_err(|e| anyhow!("any_ecdsa_type: {e}"))?;
 
@@ -187,11 +186,7 @@ impl LocalCa {
 
         // Install
         let install = std::process::Command::new("certutil")
-            .args([
-                "-addstore",
-                "Root",
-                cer_path.to_string_lossy().as_ref(),
-            ])
+            .args(["-addstore", "Root", cer_path.to_string_lossy().as_ref()])
             .output();
         let _ = std::fs::remove_file(&cer_path);
         match install {

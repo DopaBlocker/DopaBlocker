@@ -119,9 +119,7 @@ pub async fn add_item(
         item_type: payload.item_type,
         value,
         is_active: true,
-        created_at: chrono::Utc::now()
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string(),
+        created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
     })
 }
 

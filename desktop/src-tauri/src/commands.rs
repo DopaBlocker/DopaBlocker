@@ -20,9 +20,11 @@ use tokio_rusqlite::Connection;
 use dopablocker_shared::models::BlockedItem;
 
 use crate::blocking::adult_filter::AdultFilter;
+use crate::blocking::ca::{InstallStatus, LocalCa};
 use crate::blocking::engine::Engine;
 use crate::blocking::system_dns;
 use crate::db;
+use crate::AppPaths;
 
 #[derive(Debug, Serialize)]
 pub struct BlockingStatus {
@@ -32,6 +34,12 @@ pub struct BlockingStatus {
     /// construído (download + populate em background após o boot).
     pub adult_filter_building: bool,
     pub item_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CaInstallResult {
+    pub status: String,
+    pub thumbprint: String,
 }
 
 fn stringify<E: std::fmt::Display>(e: E) -> String {
@@ -59,6 +67,20 @@ async fn refresh_engine_rules(
 #[tauri::command]
 pub fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
+pub async fn install_ca_root(paths: State<'_, AppPaths>) -> Result<CaInstallResult, String> {
+    let ca = LocalCa::load_or_create(&paths.data_dir).map_err(stringify)?;
+    let status = match ca.install_in_windows_root() {
+        InstallStatus::Installed => "installed",
+        InstallStatus::AlreadyPresent => "already_present",
+        InstallStatus::Failed => "failed",
+    };
+    Ok(CaInstallResult {
+        status: status.to_string(),
+        thumbprint: ca.thumbprint().to_string(),
+    })
 }
 
 #[tauri::command]

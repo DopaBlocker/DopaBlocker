@@ -35,6 +35,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "002_parental_fixes",
         include_str!("../migrations/002_parental_fixes.sql"),
     ),
+    (
+        "003_email_verification",
+        include_str!("../migrations/003_email_verification.sql"),
+    ),
 ];
 
 /// Abre o arquivo `.db` e aplica imediatamente o `PRAGMA key` que
@@ -92,10 +96,7 @@ pub async fn run_migrations(conn: &Connection) -> Result<(), AppError> {
             )?;
             if already == 0 {
                 c.execute_batch(sql)?;
-                c.execute(
-                    "INSERT INTO _migrations(name) VALUES (?1)",
-                    params![name],
-                )?;
+                c.execute("INSERT INTO _migrations(name) VALUES (?1)", params![name])?;
                 tracing::info!(migration = name, "Migration aplicada");
             }
         }

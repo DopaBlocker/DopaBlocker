@@ -21,9 +21,9 @@
     --color-primary-hover: #2a52c8;
     --color-primary-subtle: rgba(30, 64, 175, 0.12);
 
-    --color-secondary: #6b21a8;
-    --color-secondary-hover: #8436c7;
-    --color-secondary-subtle: rgba(107, 33, 168, 0.14);
+    --color-secondary: #b026ff;
+    --color-secondary-hover: #c452ff;
+    --color-secondary-subtle: rgba(176, 38, 255, 0.14);
 
     --color-success: #10b981;
     --color-success-subtle: rgba(16, 185, 129, 0.12);
@@ -100,8 +100,15 @@ select {
 @layer components {
     /* Buttons ----------------------------------------------------------------- */
     .btn-primary {
-        @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-colors bg-primary text-white hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50;
+        @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-all text-white disabled:cursor-not-allowed disabled:opacity-50;
+        background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+        background-size: 200% auto;
         box-shadow: var(--shadow-soft);
+    }
+    .btn-primary:hover:not(:disabled) {
+        background-position: right center;
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-card);
     }
     .btn-secondary {
         @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-colors bg-surface-2 text-text hover:bg-surface-hover border border-border disabled:cursor-not-allowed disabled:opacity-50;
@@ -153,5 +160,13 @@ select {
     .badge-danger {
         @apply inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap border-danger/40 text-danger;
         background: var(--color-danger-subtle);
+    }
+    
+    /* Text -------------------------------------------------------------------- */
+    .text-gradient {
+        background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
     }
 }

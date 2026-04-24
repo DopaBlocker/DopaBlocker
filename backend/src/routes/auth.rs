@@ -9,12 +9,17 @@ use crate::errors::AppError;
 use crate::middleware::{
     extract_bearer_token, verify_firebase_jwt_token, AuthUser, FirebaseClaims,
 };
-use crate::models::{RegisterRequest, User};
-use crate::services::user_service;
+use crate::models::{
+    EmailCodeStartRequest, EmailCodeStartResponse, EmailCodeVerifyRequest, EmailCodeVerifyResponse,
+    RegisterRequest, User,
+};
+use crate::services::{auth_service, user_service};
 use crate::AppState;
 
 pub fn public_router() -> Router<AppState> {
     Router::new()
+        .route("/auth/email-code/start", post(start_email_code))
+        .route("/auth/email-code/verify", post(verify_email_code))
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
 }
@@ -76,6 +81,33 @@ fn fallback_display_name(email: &str) -> String {
         .to_string()
 }
 
+fn requires_email_verification_code(claims: &FirebaseClaims) -> bool {
+    claims.sign_in_provider() == Some("password")
+}
+
+fn provider_is_already_verified(claims: &FirebaseClaims) -> bool {
+    !requires_email_verification_code(claims) && claims.email_verified.unwrap_or(false)
+}
+
+async fn start_email_code(
+    State(state): State<AppState>,
+    Json(payload): Json<EmailCodeStartRequest>,
+) -> Result<Json<EmailCodeStartResponse>, AppError> {
+    let response =
+        auth_service::start_email_verification(&state.db, &state.config, payload.email).await?;
+    Ok(Json(response))
+}
+
+async fn verify_email_code(
+    State(state): State<AppState>,
+    Json(payload): Json<EmailCodeVerifyRequest>,
+) -> Result<Json<EmailCodeVerifyResponse>, AppError> {
+    let response =
+        auth_service::verify_email_code(&state.db, &state.config, payload.email, payload.code)
+            .await?;
+    Ok(Json(response))
+}
+
 async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -95,16 +127,39 @@ async fn register(
 
     let (email, display_name) = resolve_registration_identity(&claims, &payload)?;
 
-    let user =
-        user_service::create_user(&state.db, claims.sub, email, display_name, payload.mode)
-            .await?;
+    let user = if requires_email_verification_code(&claims) {
+        let email_verification_token = payload
+            .email_verification_token
+            .clone()
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| {
+                AppError::BadRequest("Verifique seu email antes de concluir o cadastro".into())
+            })?;
+
+        auth_service::create_user_with_email_verification(
+            &state.db,
+            &state.config,
+            claims.sub,
+            email,
+            display_name,
+            payload.mode,
+            email_verification_token,
+        )
+        .await?
+    } else {
+        if !provider_is_already_verified(&claims) {
+            return Err(AppError::BadRequest(
+                "Email do provedor de login nao esta verificado".into(),
+            ));
+        }
+
+        user_service::create_user(&state.db, claims.sub, email, display_name, payload.mode).await?
+    };
     Ok(Json(user))
 }
 
-async fn login(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<User>, AppError> {
+async fn login(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<User>, AppError> {
     let token = extract_bearer_token(&headers)?;
     let claims = verify_firebase_jwt_token(&state, &token).await?;
 
@@ -127,8 +182,11 @@ async fn me(
 
 #[cfg(test)]
 mod tests {
-    use super::{fallback_display_name, resolve_registration_identity};
-    use crate::middleware::FirebaseClaims;
+    use super::{
+        fallback_display_name, provider_is_already_verified, requires_email_verification_code,
+        resolve_registration_identity,
+    };
+    use crate::middleware::{FirebaseAuthInfo, FirebaseClaims};
     use crate::models::{BlockMode, RegisterRequest};
 
     fn payload(email: &str, display_name: &str) -> RegisterRequest {
@@ -136,6 +194,7 @@ mod tests {
             email: email.into(),
             display_name: display_name.into(),
             mode: BlockMode::Personal,
+            email_verification_token: None,
         }
     }
 
@@ -144,6 +203,20 @@ mod tests {
             sub: "firebase-uid".into(),
             email: email.map(str::to_string),
             name: name.map(str::to_string),
+            email_verified: Some(true),
+            firebase: None,
+        }
+    }
+
+    fn claims_with_provider(provider: &str, email_verified: bool) -> FirebaseClaims {
+        FirebaseClaims {
+            sub: "firebase-uid".into(),
+            email: Some("firebase@example.com".into()),
+            name: Some("Firebase Name".into()),
+            email_verified: Some(email_verified),
+            firebase: Some(FirebaseAuthInfo {
+                sign_in_provider: Some(provider.into()),
+            }),
         }
     }
 
@@ -154,7 +227,10 @@ mod tests {
             &payload("body@example.com", "Body Name"),
         );
 
-        assert!(matches!(result, Err(crate::errors::AppError::BadRequest(_))));
+        assert!(matches!(
+            result,
+            Err(crate::errors::AppError::BadRequest(_))
+        ));
     }
 
     #[test]
@@ -189,6 +265,25 @@ mod tests {
         .expect("email fallback should work");
 
         assert_eq!(result.1, "focus.user");
-        assert_eq!(fallback_display_name("focus.user@example.com"), "focus.user");
+        assert_eq!(
+            fallback_display_name("focus.user@example.com"),
+            "focus.user"
+        );
+    }
+
+    #[test]
+    fn password_provider_requires_email_code() {
+        let claims = claims_with_provider("password", false);
+
+        assert!(requires_email_verification_code(&claims));
+        assert!(!provider_is_already_verified(&claims));
+    }
+
+    #[test]
+    fn verified_google_provider_does_not_require_email_code() {
+        let claims = claims_with_provider("google.com", true);
+
+        assert!(!requires_email_verification_code(&claims));
+        assert!(provider_is_already_verified(&claims));
     }
 }

@@ -19,12 +19,17 @@ mod blocking;
 mod commands;
 mod db;
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use tauri::Manager;
 use tokio::sync::Mutex;
 
 use blocking::{adult_filter::AdultFilter, engine::Engine};
+
+#[derive(Clone)]
+pub struct AppPaths {
+    pub data_dir: PathBuf,
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -50,6 +55,10 @@ pub fn run() {
                 .path()
                 .app_cache_dir()
                 .unwrap_or_else(|_| std::env::temp_dir());
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir());
             let persisted_adult_enabled = tauri::async_runtime::block_on(async {
                 db::get_adult_filter_enabled(&conn).await.unwrap_or(false)
             });
@@ -63,7 +72,10 @@ pub fn run() {
                 }
             });
 
-            let engine = Arc::new(Mutex::new(Engine::new(adult_filter.clone())));
+            let engine = Arc::new(Mutex::new(Engine::new(
+                adult_filter.clone(),
+                data_dir.clone(),
+            )));
 
             // Resume do engine em background. Não bloqueia o setup — se falhar
             // (sem admin pra porta 53, por ex.), o usuário vê a UI com estado
@@ -79,6 +91,7 @@ pub fn run() {
             app.manage(conn);
             app.manage(engine);
             app.manage(adult_filter);
+            app.manage(AppPaths { data_dir });
 
             Ok(())
         })
@@ -91,6 +104,7 @@ pub fn run() {
             commands::set_blocking_enabled,
             commands::set_adult_filter_enabled,
             commands::get_blocking_status,
+            commands::install_ca_root,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

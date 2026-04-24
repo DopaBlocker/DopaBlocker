@@ -9,23 +9,23 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum BlockMode {
-    Personal,  // → "personal"
-    Parental,  // → "parental"
+    Personal, // → "personal"
+    Parental, // → "parental"
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
-    Windows,  // → "windows"
-    Android,  // → "android"
+    Windows, // → "windows"
+    Android, // → "android"
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum BlockedType {
-    Domain,   // → "domain"  Ex: facebook.com
-    App,      // → "app"     Ex: com.instagram.android
-    Keyword,  // → "keyword" Ex: "cassino"
+    Domain,  // → "domain"  Ex: facebook.com
+    App,     // → "app"     Ex: com.instagram.android
+    Keyword, // → "keyword" Ex: "cassino"
 }
 
 /// Conta de usuário. Uma única `User` pode ter múltiplos `Device`s vinculados.
@@ -69,7 +69,7 @@ pub struct BlockedItem {
     pub id: String,
     pub user_id: String,
     pub item_type: BlockedType,
-    pub value: String,          // O domínio ou package name
+    pub value: String, // O domínio ou package name
     pub is_active: bool,
     pub created_at: String,
 }
@@ -77,9 +77,9 @@ pub struct BlockedItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LinkStatus {
-    Pending,  // → "pending"
-    Active,   // → "active"
-    Revoked,  // → "revoked"
+    Pending, // → "pending"
+    Active,  // → "active"
+    Revoked, // → "revoked"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,7 +89,7 @@ pub struct ParentalLink {
     pub child_device_id: Option<String>, // None até o filho confirmar
     pub link_code: String,               // O código de 6 dígitos
     pub status: LinkStatus,
-    pub expires_at: String,              // now + 5 minutos (ISO 8601)
+    pub expires_at: String, // now + 5 minutos (ISO 8601)
     pub created_at: String,
 }
 

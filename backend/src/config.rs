@@ -32,6 +32,27 @@ pub struct AppConfig {
     ///   aud = "<project_id>"
     /// dos JWTs emitidos pelo Firebase Auth.
     pub firebase_project_id: String,
+    /// Secret usado para HMAC dos cÃ³digos/tokens de verificaÃ§Ã£o de email.
+    pub email_code_secret: String,
+    /// Modo de entrega dos codigos: SMTP real ou log local de desenvolvimento.
+    pub email_delivery_mode: EmailDeliveryMode,
+    /// ConfiguraÃ§Ã£o SMTP opcional. Se ausente, o endpoint de envio retorna 503.
+    pub smtp: Option<SmtpConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SmtpConfig {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub from: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmailDeliveryMode {
+    Smtp,
+    Log,
 }
 
 impl AppConfig {
@@ -48,24 +69,88 @@ impl AppConfig {
             .parse::<u16>()
             .expect("A variável PORT deve ser um número válido");
 
-        let database_path = env::var("DATABASE_PATH")
-            .unwrap_or_else(|_| "dopablocker.db".into());
+        let database_path = env::var("DATABASE_PATH").unwrap_or_else(|_| "dopablocker.db".into());
 
         // ATENÇÃO: o default "dev-only-unsafe-key" existe só para conveniência
         // local. Em produção, SQLCIPHER_KEY DEVE vir de um secret manager
         // (K8s secret, Vault, etc.). Rodar com a chave default é equivalente
         // a rodar sem criptografia.
-        let database_key = env::var("SQLCIPHER_KEY")
-            .unwrap_or_else(|_| "dev-only-unsafe-key".into());
+        let database_key =
+            env::var("SQLCIPHER_KEY").unwrap_or_else(|_| "dev-only-unsafe-key".into());
 
-        let firebase_project_id = env::var("FIREBASE_PROJECT_ID")
-            .unwrap_or_else(|_| "dopablocker-dev".into());
+        let firebase_project_id =
+            env::var("FIREBASE_PROJECT_ID").unwrap_or_else(|_| "dopablocker-dev".into());
+
+        let email_code_secret = env::var("EMAIL_CODE_SECRET")
+            .unwrap_or_else(|_| "dev-only-unsafe-email-code-secret".into());
+
+        let email_delivery_mode_value = env::var("EMAIL_DELIVERY_MODE").ok();
+        let email_delivery_mode = parse_email_delivery_mode(email_delivery_mode_value.as_deref())
+            .expect("EMAIL_DELIVERY_MODE deve ser 'smtp' ou 'log'");
+
+        let smtp = read_smtp_config();
 
         Self {
             port,
             database_path,
             database_key,
             firebase_project_id,
+            email_code_secret,
+            email_delivery_mode,
+            smtp,
         }
+    }
+}
+
+fn parse_email_delivery_mode(value: Option<&str>) -> Result<EmailDeliveryMode, String> {
+    match value.unwrap_or("smtp").trim().to_ascii_lowercase().as_str() {
+        "" | "smtp" => Ok(EmailDeliveryMode::Smtp),
+        "log" => Ok(EmailDeliveryMode::Log),
+        other => Err(format!("modo de entrega de email invalido: {other}")),
+    }
+}
+
+fn read_smtp_config() -> Option<SmtpConfig> {
+    let host = env::var("SMTP_HOST").ok()?.trim().to_string();
+    let username = env::var("SMTP_USERNAME").ok()?.trim().to_string();
+    let password = env::var("SMTP_PASSWORD").ok()?;
+    let from = env::var("SMTP_FROM").ok()?.trim().to_string();
+    let port = env::var("SMTP_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(587);
+
+    if host.is_empty() || username.is_empty() || password.is_empty() || from.is_empty() {
+        return None;
+    }
+
+    Some(SmtpConfig {
+        host,
+        port,
+        username,
+        password,
+        from,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_email_delivery_mode, EmailDeliveryMode};
+
+    #[test]
+    fn parses_email_delivery_mode_for_smtp_and_log() {
+        assert_eq!(
+            parse_email_delivery_mode(None).expect("default mode"),
+            EmailDeliveryMode::Smtp
+        );
+        assert_eq!(
+            parse_email_delivery_mode(Some("smtp")).expect("smtp mode"),
+            EmailDeliveryMode::Smtp
+        );
+        assert_eq!(
+            parse_email_delivery_mode(Some(" log ")).expect("log mode"),
+            EmailDeliveryMode::Log
+        );
+        assert!(parse_email_delivery_mode(Some("outlook")).is_err());
     }
 }

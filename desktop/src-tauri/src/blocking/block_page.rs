@@ -18,17 +18,13 @@
 // a camada DNS continua bloqueando, só fica sem página bonita.
 // =============================================================================
 
-use std::{
-    collections::HashSet,
-    net::SocketAddr,
-    sync::Arc,
-};
+use std::{collections::HashSet, net::SocketAddr, sync::Arc};
 
 use anyhow::{anyhow, Context, Result};
 use rand::seq::SliceRandom;
 use rustls::ServerConfig;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{oneshot, RwLock},
 };
@@ -241,7 +237,9 @@ async fn resolve_reason(
 
 fn render_page(domain: Option<&str>, reason: Option<BlockReason>) -> String {
     let domain_text = domain.unwrap_or("");
-    let reason_text = reason.map(BlockReason::as_text).unwrap_or(GENERIC_REASON_TEXT);
+    let reason_text = reason
+        .map(BlockReason::as_text)
+        .unwrap_or(GENERIC_REASON_TEXT);
     let quote = {
         let mut rng = rand::thread_rng();
         QUOTES.choose(&mut rng).copied().unwrap_or(QUOTES[0])
@@ -294,9 +292,6 @@ pub async fn run(
 ) -> Result<()> {
     run_http(rules, adult, shutdown).await
 }
-
-// Make write trait used on TlsStream
-trait _Placeholder: AsyncWrite {}
 
 #[cfg(test)]
 mod tests {

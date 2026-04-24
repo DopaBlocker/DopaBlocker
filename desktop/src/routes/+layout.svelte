@@ -109,7 +109,7 @@
                     <div class="h-3 w-3 rounded-sm bg-white/90"></div>
                 </div>
                 <div class="flex flex-col leading-tight">
-                    <span class="text-[13px] font-semibold tracking-tight">DopaBlocker</span>
+                    <span class="text-[13px] font-semibold tracking-tight text-gradient">DopaBlocker</span>
                     <span class="text-[10px] uppercase tracking-widest text-text-dim">
                         Foco
                     </span>

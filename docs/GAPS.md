@@ -21,7 +21,6 @@ abaixo são **o que continua aberto**.
 | C3 | **Troca de DNS só IPv4** | [blocking/system_dns.rs](../desktop/src-tauri/src/blocking/system_dns.rs) usa `netsh interface ipv4` | Mesmo se filtros WFP v6 existirem, o OS ainda tem DNS v6 original que pode vazar antes do filtro ser consultado | Espelhar a lógica de capture/apply/restore pra `interface ipv6` |
 | C4 | **DoH sem SNI inspection** | [blocking/wfp.rs](../desktop/src-tauri/src/blocking/wfp.rs) bloqueia DoH só por IP estático | NextDNS/ControlD/resolvers self-hosted usam IPs rotativos não cobertos pela lista | Callout driver kernel-mode (DPI no TLS ClientHello) — projeto de semanas, vira v0.2+ |
 | C5 | **Sem DoQ (DNS-over-QUIC) explícito** | UDP/443 não é filtrado especificamente | Protocolo emergente — resolver DoQ em IP não-conhecido passa | Adicionar UDP/443 ao filtro DoH junto com lista de IPs |
-| C6 | **Block page só HTTP, não HTTPS** | [blocking/block_page.rs](../desktop/src-tauri/src/blocking/block_page.rs) serve em `127.0.0.1:80`; sites HTTPS caem em `127.0.0.1:443` que não temos servindo | Usuário vê "ERR_CONNECTION_REFUSED" em vez da página bonita pro ~99% dos sites (HSTS é default) | Caminho real: CA local auto-instalada + cert dinâmico por hostname (rcgen + rustls). Alternativa: extensão de browser per-browser |
 
 ---
 
@@ -37,6 +36,7 @@ abaixo são **o que continua aberto**.
 | F6 | **Sem múltiplas listas de conteúdo adulto** | Só Steven Black `alternates/porn/hosts` | Combinar com OISD/adguard-content-farms aumentaria cobertura |
 | F7 | **`sync_with_backend` só unidirecional** | [lib/stores/blocking.ts](../desktop/src/lib/stores/blocking.ts) | Frontend pull, não push — se offline editar não sincroniza de volta. Precisa fila de writes pendentes |
 | F8 | **Sem painel de estatísticas** | Nada agregando hits/misses do DNS proxy | Usuário não enxerga quanto foi bloqueado; precisa tabela `block_events` + UI |
+| F9 | **Firefox não confia na CA do DopaBlocker** | Firefox usa NSS em vez do Windows Root store por padrão | A página HTTPS funciona em Chrome/Edge/Brave, mas Firefox pode mostrar erro de certificado. Fix futuro: instalar a CA nos perfis NSS detectados |
 
 ---
 
@@ -64,9 +64,10 @@ abaixo são **o que continua aberto**.
 | # | Gap | Nota |
 |---|-----|------|
 | H11 | Sem 2FA no Firebase Auth | Fluxo opcional no próprio Firebase |
-| H12 | SQLCipher key fica acessível a qualquer processo rodando como o mesmo usuário | Windows Credential Manager é user-scoped; malware no user teria acesso. Mitigação: DPAPI com flags de process-scoped |
+| H12 | SQLCipher key e chave privada da CA ficam acessíveis a qualquer processo rodando como o mesmo usuário | Windows Credential Manager/app data são user-scoped; malware no user teria acesso. Mitigação: DPAPI com flags de process-scoped + ACL mais restrita |
 | H13 | Sem assinatura de binário Windows (code signing) | Defender vai marcar "Unknown publisher" e usuário precisa clicar "Run anyway" |
 | H14 | Sem proteção contra DLL hijacking / side-loading | Binário não valida DLLs carregadas — relevante se distribuir sem installer |
+| H15 | Domínios com pinning embutido no Chromium ainda podem mostrar erro de certificado | Algumas propriedades Google/Facebook recusam CAs locais mesmo instaladas; limitação inerente do navegador |
 
 ---
 
@@ -138,6 +139,7 @@ Para registro, antes da etapa 7 foram implementados (saíram da lista de gaps):
 - ✅ **TCP DNS** (UDP+TCP listeners)
 - ✅ **Failover de upstream** (DoH Cloudflare → DoH Google → UDP 1.1.1.1 → UDP 8.8.8.8)
 - ✅ **DoH upstream** (HTTPS pra resolver queries permitidas)
+- ✅ **Block page HTTPS** (parcial) — CA local instalada no Windows Root + certificados leaf dinâmicos por SNI; Firefox/NSS e pinning Chromium seguem documentados como gaps
 
 ---
 

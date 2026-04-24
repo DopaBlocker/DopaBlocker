@@ -109,14 +109,14 @@ mod tests {
 
     #[tokio::test]
     async fn returns_none_when_not_blocked() {
-        let (rules, adult) = setup(&["instagram.com"]).await;
+        let (rules, adult) = setup(&["instagram.com"]);
         assert_eq!(check("google.com", &rules, &adult).await, None);
     }
 
     #[tokio::test]
     async fn adult_filter_disabled_returns_none() {
         // AdultFilter.contains() é false quando !is_enabled; adult check pula.
-        let (rules, adult) = setup(&[]).await;
+        let (rules, adult) = setup(&[]);
         assert_eq!(check("pornhub.com", &rules, &adult).await, None);
     }
 }

@@ -163,9 +163,7 @@ async fn fetch_jwks_timed() -> Result<HashMap<String, DecodingKey>, AppError> {
     let client = reqwest::Client::builder()
         .timeout(JWKS_FETCH_TIMEOUT)
         .build()
-        .map_err(|e| {
-            AppError::InternalServerError(format!("Falha ao criar client JWKS: {e}"))
-        })?;
+        .map_err(|e| AppError::InternalServerError(format!("Falha ao criar client JWKS: {e}")))?;
 
     let resp: HashMap<String, String> = client
         .get(JWKS_URL)
@@ -201,6 +199,25 @@ pub struct FirebaseClaims {
     pub email: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub email_verified: Option<bool>,
+    #[serde(default)]
+    pub firebase: Option<FirebaseAuthInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct FirebaseAuthInfo {
+    #[serde(default)]
+    pub sign_in_provider: Option<String>,
+}
+
+impl FirebaseClaims {
+    pub fn sign_in_provider(&self) -> Option<&str> {
+        self.firebase
+            .as_ref()
+            .and_then(|firebase| firebase.sign_in_provider.as_deref())
+    }
 }
 
 /// Valida um Firebase JWT e retorna os claims. NÃO faz lookup em `users` —

@@ -61,9 +61,9 @@ pub fn extract_domain(url: &str) -> Option<String> {
 /// **não** bloqueia `"notyoutube.com"`.
 pub fn is_domain_blocked(domain: &str, blocklist: &[String]) -> bool {
     let normalized = normalize_domain(domain);
-    blocklist.iter().any(|item| {
-        normalized == *item || normalized.ends_with(&format!(".{}", item))
-    })
+    blocklist
+        .iter()
+        .any(|item| normalized == *item || normalized.ends_with(&format!(".{}", item)))
 }
 
 #[cfg(test)]
@@ -72,7 +72,10 @@ mod tests {
 
     #[test]
     fn normalize_strips_protocol_www_and_path() {
-        assert_eq!(normalize_domain("https://www.YouTube.com/watch?v=123"), "youtube.com");
+        assert_eq!(
+            normalize_domain("https://www.YouTube.com/watch?v=123"),
+            "youtube.com"
+        );
         assert_eq!(normalize_domain("http://facebook.com/"), "facebook.com");
         assert_eq!(normalize_domain("HTTP://Instagram.COM"), "instagram.com");
     }

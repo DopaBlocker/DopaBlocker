@@ -3,7 +3,7 @@
 // =============================================================================
 // O rustls chama `resolve(client_hello)` no meio do handshake TLS; temos que
 // devolver um `CertifiedKey` apropriado pro SNI que o browser pediu. Sem
-// SNI → None (browser aborta: ok, só TLS 1.0 antigo chega aqui).
+// SNI -> None (browser aborta: ok, só TLS 1.0 antigo chega aqui).
 //
 // Cache: HashMap por SNI. Tamanho implícito (dezenas/centenas de hosts por
 // sessão). Se virar problema, trocar por LRU; por ora, simples.
@@ -29,6 +29,30 @@ impl SniCertResolver {
             cache: Mutex::new(HashMap::new()),
         }
     }
+
+    fn resolve_sni(&self, sni: &str) -> Option<Arc<CertifiedKey>> {
+        if let Some(hit) = self.cache.lock().ok().and_then(|m| m.get(sni).cloned()) {
+            return Some(hit);
+        }
+
+        let ck = match self.ca.sign_leaf(sni) {
+            Ok(ck) => Arc::new(ck),
+            Err(e) => {
+                tracing::warn!(sni, error = %e, "sign_leaf falhou");
+                return None;
+            }
+        };
+
+        if let Ok(mut m) = self.cache.lock() {
+            m.insert(sni.to_string(), ck.clone());
+        }
+        Some(ck)
+    }
+
+    #[cfg(test)]
+    fn cache_len(&self) -> usize {
+        self.cache.lock().map(|m| m.len()).unwrap_or(0)
+    }
 }
 
 impl std::fmt::Debug for SniCertResolver {
@@ -40,24 +64,7 @@ impl std::fmt::Debug for SniCertResolver {
 impl ResolvesServerCert for SniCertResolver {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         let sni = client_hello.server_name()?.to_string();
-
-        // Cache hit (escopo curto do lock)
-        if let Some(hit) = self.cache.lock().ok().and_then(|m| m.get(&sni).cloned()) {
-            return Some(hit);
-        }
-
-        let ck = match self.ca.sign_leaf(&sni) {
-            Ok(ck) => Arc::new(ck),
-            Err(e) => {
-                tracing::warn!(sni = %sni, error = %e, "sign_leaf falhou");
-                return None;
-            }
-        };
-
-        if let Ok(mut m) = self.cache.lock() {
-            m.insert(sni, ck.clone());
-        }
-        Some(ck)
+        self.resolve_sni(&sni)
     }
 }
 
@@ -77,16 +84,20 @@ mod tests {
     #[test]
     fn cache_returns_same_arc_for_same_sni() {
         let ca = Arc::new(LocalCa::load_or_create(&tmp_dir()).unwrap());
-        let resolver = SniCertResolver::new(ca.clone());
-        // Não conseguimos montar um ClientHello real fora do handshake, então
-        // exercitamos o caminho via chamada direta à CA — que é o trabalho
-        // custoso. Segunda chamada do resolver (cache) seria O(1).
-        let a = ca.sign_leaf("instagram.com").unwrap();
-        let b = ca.sign_leaf("instagram.com").unwrap();
-        // Dois Certificates assinados em instantes diferentes — bytes
-        // divergem (serial/timestamps), mas ambos têm cadeia válida.
-        assert_eq!(a.cert.len(), b.cert.len());
-        // Verifica que o cache do resolver está acessível.
-        assert_eq!(resolver.cache.lock().unwrap().len(), 0);
+        let resolver = SniCertResolver::new(ca);
+        let a = resolver.resolve_sni("instagram.com").unwrap();
+        let b = resolver.resolve_sni("instagram.com").unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        assert_eq!(resolver.cache_len(), 1);
+    }
+
+    #[test]
+    fn cache_miss_creates_new_entry_for_new_sni() {
+        let ca = Arc::new(LocalCa::load_or_create(&tmp_dir()).unwrap());
+        let resolver = SniCertResolver::new(ca);
+        let a = resolver.resolve_sni("instagram.com").unwrap();
+        let b = resolver.resolve_sni("youtube.com").unwrap();
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert_eq!(resolver.cache_len(), 2);
     }
 }

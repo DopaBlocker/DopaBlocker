@@ -16,7 +16,7 @@ pub struct BloomFilter {
 
 fn fnv1a_hash(data: &str) -> u64 {
     const FNV_OFFSET: u64 = 14695981039346656037;
-    const FNV_PRIME:  u64 = 1099511628211;
+    const FNV_PRIME: u64 = 1099511628211;
 
     let mut hash = FNV_OFFSET;
 
@@ -58,13 +58,16 @@ fn get_positions(item: &str, num_hashes: usize, array_size: usize) -> Vec<usize>
 }
 
 impl BloomFilter {
-    pub fn new (expected_items: usize, false_positive_rate: f64) -> Self {
+    pub fn new(expected_items: usize, false_positive_rate: f64) -> Self {
         let size = calculate_size(expected_items, false_positive_rate);
         let num_hashes = calculate_num_hashes(size, expected_items);
         let bit_array: Vec<bool> = vec![false; size];
-        BloomFilter { bit_array, num_hashes }
+        BloomFilter {
+            bit_array,
+            num_hashes,
+        }
     }
-    
+
     pub fn insert(&mut self, item: &str) {
         let positions = get_positions(item, self.num_hashes, self.bit_array.len());
         for pos in &positions {
@@ -122,4 +125,3 @@ mod tests {
         assert!(fps < 200, "false positives = {fps} (>= 2% de 10k)");
     }
 }
-

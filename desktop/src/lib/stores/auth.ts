@@ -25,6 +25,7 @@ export interface FirebaseIdentity {
     uid: string;
     email: string;
     display_name: string;
+    provider_id?: string;
 }
 
 export interface AuthState {
@@ -229,6 +230,7 @@ function createAuthStore() {
         password: string,
         displayName: string,
         mode: BlockMode,
+        emailVerificationToken?: string,
     ) {
         commit({
             phase: 'authenticating',
@@ -239,7 +241,7 @@ function createAuthStore() {
 
         try {
             await signUpEmail(email, password, displayName);
-            await completeLocalRegistration(mode, displayName);
+            await completeLocalRegistration(mode, displayName, emailVerificationToken);
         } catch (err) {
             if (snapshot.phase === 'authenticating') {
                 const message = friendly(err);
@@ -265,7 +267,11 @@ function createAuthStore() {
         }
     }
 
-    async function completeLocalRegistration(mode: BlockMode, displayName?: string) {
+    async function completeLocalRegistration(
+        mode: BlockMode,
+        displayName?: string,
+        emailVerificationToken?: string,
+    ) {
         const fbUser = currentFirebaseUser();
         if (!fbUser) {
             const message = 'Sua sessao expirou. Entre novamente para concluir o cadastro.';
@@ -298,6 +304,9 @@ function createAuthStore() {
                 email: firebaseIdentity.email,
                 display_name: resolvedDisplayName,
                 mode,
+                ...(emailVerificationToken
+                    ? { email_verification_token: emailVerificationToken }
+                    : {}),
             });
 
             if (syncVersion !== authSyncVersion) return snapshot.user;
@@ -437,6 +446,7 @@ function toFirebaseIdentity(fbUser: FirebaseSdkUser): FirebaseIdentity {
         uid: fbUser.uid,
         email: fbUser.email?.trim() ?? '',
         display_name: fbUser.displayName?.trim() || fallbackDisplayName(fbUser.email),
+        provider_id: fbUser.providerData[0]?.providerId,
     };
 }
 
