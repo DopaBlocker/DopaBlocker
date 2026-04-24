@@ -1,37 +1,13 @@
 // =============================================================================
 // Controle do DNS do sistema Windows via `netsh`.
 // =============================================================================
-// Por que netsh e não a API Win32 (IpHelper)? A API nativa devolve os IPs de
-// DNS mas só permite alterar via `NotifyRoute...` + registry writes — ~150
-// linhas de unsafe FFI. `netsh` é estável há 25 anos, presente em todo
-// Windows, e os comandos de DNS que usamos (set static / set dhcp) são
-// garantidos idempotentes. Custa um process spawn (~50ms) por operação,
-// aceitável porque chamamos só no toggle.
-//
-// Fluxo "usuário liga bloqueio":
-//   1. `capture_current()` — roda `netsh show dnsservers`, parseia blocos
-//      por interface. IPv4 apenas (IPv6 é gap documentado — a maioria do
-//      tráfego segue por A, mas DoH via IPv6 escapa).
-//   2. Persiste a snapshot em `blocking_state` como JSON — serve de rede de
-//      segurança contra crash (se o app morrer, o próximo boot restaura).
-//   3. `apply_proxy_dns` aponta todas as interfaces para `127.0.0.1`.
-//
-// Fluxo "desliga":
-//   1. `restore_all` aplica a snapshot. Se a interface estava em DHCP,
-//      volta pra `source=dhcp`; se estava em static, seta os IPs saved.
-//   2. Remove a snapshot do DB.
-//
-// Fluxo "app subiu após crash":
-//   1. `restore_if_any` — se tem snapshot, restaura antes de qualquer coisa.
-//      Isso garante que nunca re-capturamos 127.0.0.1 como "original".
-//   2. Depois a lógica normal de resume do engine.
-//
-// Parsing é locale-independente: detecta DHCP por case-insensitive "dhcp"
-// (acrônimo, igual em PT e EN), nomes de interface vêm sempre entre aspas,
-// IPs são IPv4 standard. Testado com outputs EN e PT BR.
+// O motor de bloqueio vive no loopback local, entao precisamos apontar o DNS
+// do sistema para ele. O bug real observado em Windows 11 era que trocavamos
+// apenas o DNS IPv4; o sistema continuava com DNS IPv6 ativo e resolvia por
+// fora do proxy. Este modulo agora captura/restaura IPv4 + IPv6.
 // =============================================================================
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -40,8 +16,15 @@ use tokio_rusqlite::Connection;
 
 use crate::db;
 
-const PROXY_IP: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+const PROXY_IPV4: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+const PROXY_IPV6: IpAddr = IpAddr::V6(Ipv6Addr::LOCALHOST);
 const STATE_KEY: &str = "original_dns_config";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DnsFamily {
+    V4,
+    V6,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DnsSource {
@@ -52,18 +35,21 @@ pub enum DnsSource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InterfaceDnsConfig {
     pub name: String,
+    #[serde(default = "default_dns_family")]
+    pub family: DnsFamily,
     pub source: DnsSource,
     pub servers: Vec<IpAddr>,
 }
 
+fn default_dns_family() -> DnsFamily {
+    DnsFamily::V4
+}
+
 // -------- high-level orchestration -----------------------------------------
 
-/// Captura o DNS atual + persiste no DB + aponta todas as interfaces pro
-/// proxy. Operação pensada pra ser atômica do ponto de vista do usuário:
-/// ou completa tudo ou volta atrás.
 pub async fn apply_and_remember(conn: &Connection) -> Result<()> {
     if !cfg!(target_os = "windows") {
-        return Ok(()); // no-op em outros SOs — útil pra dev local
+        return Ok(());
     }
     let current = capture_current().await.context("capturar DNS atual")?;
     if current.is_empty() {
@@ -76,16 +62,12 @@ pub async fn apply_and_remember(conn: &Connection) -> Result<()> {
         .context("persistir snapshot de DNS")?;
 
     if let Err(apply_err) = apply_proxy_dns(&current).await {
-        // Rollback do DB — sem a snapshot, não há "estado pendente" que o
-        // próximo boot vá tentar restaurar.
         let _ = db::clear_state(conn, STATE_KEY).await;
         return Err(apply_err).context("aplicar proxy DNS");
     }
     Ok(())
 }
 
-/// Restaura qualquer snapshot pendente (se houver) e limpa o slot no DB.
-/// Idempotente: sem snapshot, no-op.
 pub async fn restore_if_any(conn: &Connection) -> Result<()> {
     if !cfg!(target_os = "windows") {
         return Ok(());
@@ -100,74 +82,93 @@ pub async fn restore_if_any(conn: &Connection) -> Result<()> {
         serde_json::from_str(&json).context("deserializar snapshot")?;
     restore_all(&snapshot).await;
     db::clear_state(conn, STATE_KEY).await?;
+    flush_resolver_cache().await;
     Ok(())
 }
 
 // -------- capture ----------------------------------------------------------
 
-/// Lista as interfaces ativas (não-loopback) com suas configs atuais de DNS.
 pub async fn capture_current() -> Result<Vec<InterfaceDnsConfig>> {
-    let output = netsh(&["interface", "ipv4", "show", "dnsservers"]).await?;
-    Ok(parse_dnsservers_output(&output))
+    let ipv4 = netsh(&["interface", "ipv4", "show", "dnsservers"]).await?;
+    let ipv6 = netsh(&["interface", "ipv6", "show", "dnsservers"]).await?;
+
+    let mut out = parse_dnsservers_output_for_family(&ipv4, DnsFamily::V4);
+    out.extend(parse_dnsservers_output_for_family(&ipv6, DnsFamily::V6));
+    Ok(out)
 }
 
 // -------- apply ------------------------------------------------------------
 
-/// Aplica `127.0.0.1` como único DNS em todas as interfaces. Erros por
-/// interface são logados; se *todas* falharem, retorna erro.
 pub async fn apply_proxy_dns(interfaces: &[InterfaceDnsConfig]) -> Result<()> {
     let mut applied = 0;
     let mut last_err: Option<anyhow::Error> = None;
+
     for cfg in interfaces {
-        match set_static_primary(&cfg.name, PROXY_IP).await {
+        let proxy_ip = match cfg.family {
+            DnsFamily::V4 => PROXY_IPV4,
+            DnsFamily::V6 => PROXY_IPV6,
+        };
+
+        match set_static_primary(cfg.family, &cfg.name, proxy_ip).await {
             Ok(()) => {
                 applied += 1;
-                tracing::info!(interface = %cfg.name, "DNS → 127.0.0.1");
+                tracing::info!(
+                    interface = %cfg.name,
+                    family = ?cfg.family,
+                    dns = %proxy_ip,
+                    "DNS apontado para o proxy"
+                );
             }
             Err(e) => {
-                tracing::warn!(interface = %cfg.name, error = %e, "falha ao setar DNS");
+                tracing::warn!(
+                    interface = %cfg.name,
+                    family = ?cfg.family,
+                    error = %e,
+                    "falha ao setar DNS"
+                );
                 last_err = Some(e);
             }
         }
     }
+
     if applied == 0 {
-        return Err(last_err.unwrap_or_else(|| anyhow::anyhow!("nenhuma interface elegível")));
+        return Err(last_err.unwrap_or_else(|| anyhow::anyhow!("nenhuma interface elegivel")));
     }
+
+    flush_resolver_cache().await;
     Ok(())
 }
 
 // -------- restore ----------------------------------------------------------
 
-/// Tenta restaurar cada interface ao snapshot. Best-effort: erros individuais
-/// são logados mas não abortam a restauração das outras. Na prática isso é
-/// importante — se uma interface foi desconectada entre o capture e o
-/// restore, não queremos deixar as outras sem restaurar.
 pub async fn restore_all(configs: &[InterfaceDnsConfig]) {
     for cfg in configs {
         if let Err(e) = restore_one(cfg).await {
-            tracing::warn!(interface = %cfg.name, error = %e, "falha ao restaurar DNS");
+            tracing::warn!(
+                interface = %cfg.name,
+                family = ?cfg.family,
+                error = %e,
+                "falha ao restaurar DNS"
+            );
         } else {
-            tracing::info!(interface = %cfg.name, "DNS restaurado");
+            tracing::info!(interface = %cfg.name, family = ?cfg.family, "DNS restaurado");
         }
     }
 }
 
 async fn restore_one(cfg: &InterfaceDnsConfig) -> Result<()> {
     match cfg.source {
-        DnsSource::Dhcp => set_dhcp(&cfg.name).await,
+        DnsSource::Dhcp => set_dhcp(cfg.family, &cfg.name).await,
         DnsSource::Static => {
             if cfg.servers.is_empty() {
-                // Estava static sem nenhum DNS — caso raro, patológico mesmo.
-                // Fallback pra DHCP é mais útil que "sem DNS nenhum" depois
-                // do app desligar.
-                return set_dhcp(&cfg.name).await;
+                return set_dhcp(cfg.family, &cfg.name).await;
             }
-            // Primeiro seta o primary; `add` acumula os demais.
-            set_static_primary(&cfg.name, cfg.servers[0]).await?;
+
+            set_static_primary(cfg.family, &cfg.name, cfg.servers[0]).await?;
             for (i, ip) in cfg.servers.iter().enumerate().skip(1) {
                 netsh(&[
                     "interface",
-                    "ipv4",
+                    family_label(cfg.family),
                     "add",
                     "dnsservers",
                     &format!("name=\"{}\"", cfg.name),
@@ -183,28 +184,26 @@ async fn restore_one(cfg: &InterfaceDnsConfig) -> Result<()> {
 
 // -------- netsh wrappers ---------------------------------------------------
 
-async fn set_static_primary(iface: &str, ip: IpAddr) -> Result<()> {
+async fn set_static_primary(family: DnsFamily, iface: &str, ip: IpAddr) -> Result<()> {
     netsh(&[
         "interface",
-        "ipv4",
+        family_label(family),
         "set",
         "dnsservers",
         &format!("name=\"{iface}\""),
         "static",
         &ip.to_string(),
         "primary",
-        // validate=no evita que netsh tente "ping" no DNS novo antes de setar
-        // — inútil pra nós (o proxy já está subido) e atrasa uns 5s.
         "validate=no",
     ])
     .await
     .map(|_| ())
 }
 
-async fn set_dhcp(iface: &str) -> Result<()> {
+async fn set_dhcp(family: DnsFamily, iface: &str) -> Result<()> {
     netsh(&[
         "interface",
-        "ipv4",
+        family_label(family),
         "set",
         "dnsservers",
         &format!("name=\"{iface}\""),
@@ -212,6 +211,13 @@ async fn set_dhcp(iface: &str) -> Result<()> {
     ])
     .await
     .map(|_| ())
+}
+
+fn family_label(family: DnsFamily) -> &'static str {
+    match family {
+        DnsFamily::V4 => "ipv4",
+        DnsFamily::V6 => "ipv6",
+    }
 }
 
 async fn netsh(args: &[&str]) -> Result<String> {
@@ -224,7 +230,6 @@ async fn netsh(args: &[&str]) -> Result<String> {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
         let msg = if !stderr.is_empty() { stderr } else { stdout };
-        // Mensagem específica pra caso clássico — admin faltando.
         let hint = if msg.to_lowercase().contains("access")
             || msg.contains("negado")
             || msg.contains("Elevation")
@@ -238,9 +243,36 @@ async fn netsh(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+async fn flush_resolver_cache() {
+    match Command::new("ipconfig").args(["/flushdns"]).output().await {
+        Ok(out) if out.status.success() => {
+            tracing::info!("cache DNS do Windows limpo");
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let msg = if !stderr.is_empty() { stderr } else { stdout };
+            tracing::warn!(error = %msg, "falha ao limpar cache DNS do Windows");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "nao foi possivel executar ipconfig /flushdns");
+        }
+    }
+}
+
 // -------- parser -----------------------------------------------------------
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn parse_dnsservers_output(text: &str) -> Vec<InterfaceDnsConfig> {
+    let family = if text.contains("::") || text.contains('%') {
+        DnsFamily::V6
+    } else {
+        DnsFamily::V4
+    };
+    parse_dnsservers_output_for_family(text, family)
+}
+
+fn parse_dnsservers_output_for_family(text: &str, family: DnsFamily) -> Vec<InterfaceDnsConfig> {
     let mut out = Vec::new();
     let mut current: Option<InterfaceDnsConfig> = None;
 
@@ -252,27 +284,30 @@ fn parse_dnsservers_output(text: &str) -> Vec<InterfaceDnsConfig> {
             }
             current = Some(InterfaceDnsConfig {
                 name,
+                family,
                 source: DnsSource::Static,
                 servers: Vec::new(),
             });
             continue;
         }
-        let Some(cfg) = current.as_mut() else { continue };
+
+        let Some(cfg) = current.as_mut() else {
+            continue;
+        };
         if trimmed.to_lowercase().contains("dhcp") {
             cfg.source = DnsSource::Dhcp;
         }
-        if let Some(ip) = extract_ipv4(trimmed) {
+        if let Some(ip) = extract_ip(trimmed, family) {
             cfg.servers.push(ip);
         }
     }
+
     if let Some(last) = current.take() {
         push_if_usable(&mut out, last);
     }
     out
 }
 
-/// Extrai o nome entre aspas de uma linha "Configuration for interface "Wi-Fi"".
-/// Funciona em EN e PT porque o formato "..." é o mesmo.
 fn extract_quoted_name(line: &str) -> Option<String> {
     let first = line.find('"')?;
     let rest = &line[first + 1..];
@@ -280,17 +315,30 @@ fn extract_quoted_name(line: &str) -> Option<String> {
     Some(rest[..last].to_string())
 }
 
-/// Pega o primeiro IPv4 que aparecer na linha. Ignora lixo (colon, keywords).
-fn extract_ipv4(line: &str) -> Option<IpAddr> {
+fn extract_ip(line: &str, family: DnsFamily) -> Option<IpAddr> {
     line.split_whitespace()
-        .filter_map(|tok| tok.trim_end_matches(&[',', ';'][..]).parse::<IpAddr>().ok())
-        .find(|ip| ip.is_ipv4())
+        .filter_map(normalize_ip_token)
+        .filter_map(|tok| tok.parse::<IpAddr>().ok())
+        .find(|ip| match family {
+            DnsFamily::V4 => ip.is_ipv4(),
+            DnsFamily::V6 => ip.is_ipv6(),
+        })
+}
+
+fn normalize_ip_token(tok: &str) -> Option<String> {
+    let trimmed = tok.trim_end_matches(&[',', ';'][..]);
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_zone = match trimmed.find('%') {
+        Some(idx) => &trimmed[..idx],
+        None => trimmed,
+    };
+    Some(without_zone.to_string())
 }
 
 fn push_if_usable(out: &mut Vec<InterfaceDnsConfig>, cfg: InterfaceDnsConfig) {
     let lower = cfg.name.to_lowercase();
-    // "Loopback Pseudo-Interface 1" (EN) e "Loopback Pseudo-Interface 1" (PT)
-    // — nome é igual, keyword "loopback" é universal.
     if lower.contains("loopback") {
         return;
     }
@@ -318,12 +366,12 @@ Configuration for interface "Ethernet 3"
 "#;
 
     const SAMPLE_PT: &str = r#"
-Configuração para interface "Loopback Pseudo-Interface 1"
+Configuracao para interface "Loopback Pseudo-Interface 1"
     Servidores DNS configurados estaticamente:    Nenhum
 
-Configuração para interface "Wi-Fi"
+Configuracao para interface "Wi-Fi"
     Servidores DNS configurados por DHCP:  192.168.0.1
-    Registrar com qual sufixo:             Somente primário
+    Registrar com qual sufixo:             Somente primario
 "#;
 
     #[test]
@@ -331,6 +379,7 @@ Configuração para interface "Wi-Fi"
         let cfgs = parse_dnsservers_output(SAMPLE_EN);
         assert_eq!(cfgs.len(), 2, "loopback deve ser filtrado");
         assert_eq!(cfgs[0].name, "Wi-Fi");
+        assert_eq!(cfgs[0].family, DnsFamily::V4);
         assert_eq!(cfgs[0].source, DnsSource::Dhcp);
         assert_eq!(cfgs[0].servers.len(), 2);
         assert_eq!(cfgs[1].name, "Ethernet 3");
@@ -343,8 +392,12 @@ Configuração para interface "Wi-Fi"
         let cfgs = parse_dnsservers_output(SAMPLE_PT);
         assert_eq!(cfgs.len(), 1);
         assert_eq!(cfgs[0].name, "Wi-Fi");
+        assert_eq!(cfgs[0].family, DnsFamily::V4);
         assert_eq!(cfgs[0].source, DnsSource::Dhcp);
-        assert_eq!(cfgs[0].servers, vec![IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1))]);
+        assert_eq!(
+            cfgs[0].servers,
+            vec![IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1))]
+        );
     }
 
     #[test]
@@ -354,5 +407,28 @@ Configuração para interface "Wi-Fi"
             Some("Wi-Fi".to_string())
         );
         assert_eq!(extract_quoted_name("no quotes here"), None);
+    }
+
+    #[test]
+    fn parses_ipv6_dns_servers_and_strips_zone_ids() {
+        let sample = r#"
+Configuracao da interface "Ethernet"
+    Servidores DNS configurados por DHCP:  fe80::860b:bbff:fe1b:2288%6
+                                           2606:4700:4700::1111
+    Registrar com o sufixo:           Somente principal
+"#;
+
+        let cfgs = parse_dnsservers_output(sample);
+        assert_eq!(cfgs.len(), 1);
+        assert_eq!(cfgs[0].name, "Ethernet");
+        assert_eq!(cfgs[0].family, DnsFamily::V6);
+        assert_eq!(cfgs[0].source, DnsSource::Dhcp);
+        assert_eq!(
+            cfgs[0].servers,
+            vec![
+                IpAddr::V6("fe80::860b:bbff:fe1b:2288".parse().unwrap()),
+                IpAddr::V6("2606:4700:4700::1111".parse().unwrap()),
+            ]
+        );
     }
 }

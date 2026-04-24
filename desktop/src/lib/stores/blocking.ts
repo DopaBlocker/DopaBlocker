@@ -21,6 +21,7 @@ export interface BlockingState {
 const initialStatus: BlockingStatus = {
     enabled: false,
     adult_filter_enabled: false,
+    adult_filter_building: false,
     item_count: 0,
 };
 
@@ -44,6 +45,7 @@ function createBlockingStore() {
             const status = await bridge.getBlockingStatus(userId).catch(() => ({
                 enabled: false,
                 adult_filter_enabled: false,
+                adult_filter_building: false,
                 item_count: items.length,
             }));
             set({

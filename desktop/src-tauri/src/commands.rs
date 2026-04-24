@@ -19,13 +19,18 @@ use tokio_rusqlite::Connection;
 
 use dopablocker_shared::models::BlockedItem;
 
+use crate::blocking::adult_filter::AdultFilter;
 use crate::blocking::engine::Engine;
+use crate::blocking::system_dns;
 use crate::db;
 
 #[derive(Debug, Serialize)]
 pub struct BlockingStatus {
     pub enabled: bool,
     pub adult_filter_enabled: bool,
+    /// True quando o filtro está enabled mas o Bloom ainda não foi
+    /// construído (download + populate em background após o boot).
+    pub adult_filter_building: bool,
     pub item_count: usize,
 }
 
@@ -88,7 +93,9 @@ pub async fn cache_add_item(
     item: BlockedItem,
 ) -> Result<(), String> {
     let user_id = item.user_id.clone();
-    db::upsert_blocked_item(&conn, item).await.map_err(stringify)?;
+    db::upsert_blocked_item(&conn, item)
+        .await
+        .map_err(stringify)?;
     refresh_engine_rules(&conn, &engine, user_id).await
 }
 
@@ -99,7 +106,9 @@ pub async fn cache_remove_item(
     id: String,
     user_id: String,
 ) -> Result<(), String> {
-    db::delete_blocked_item(&conn, id).await.map_err(stringify)?;
+    db::delete_blocked_item(&conn, id)
+        .await
+        .map_err(stringify)?;
     refresh_engine_rules(&conn, &engine, user_id).await
 }
 
@@ -115,22 +124,39 @@ pub async fn set_blocking_enabled(
     user_id: String,
     enabled: bool,
 ) -> Result<(), String> {
-    {
-        let mut eng = engine.lock().await;
-        if enabled {
-            let rules = db::list_active_domains(&conn, user_id.clone())
-                .await
-                .map_err(stringify)?;
+    if enabled {
+        // 1. Sobe o proxy. Se falhar no bind (porta 53 sem admin, já ocupada),
+        //    nem chegamos a mexer no DNS do sistema.
+        let rules = db::list_active_domains(&conn, user_id.clone())
+            .await
+            .map_err(stringify)?;
+        {
+            let mut eng = engine.lock().await;
             if eng.is_running() {
                 eng.update_rules(rules).await;
             } else {
                 eng.start(rules).await.map_err(stringify)?;
             }
-        } else {
-            eng.stop().await;
         }
+
+        // 2. Aponta o DNS do sistema pro proxy. Se falhar (tipicamente admin),
+        //    rollback no engine — melhor desligado do que meio-configurado.
+        if let Err(e) = system_dns::apply_and_remember(&conn).await {
+            let mut eng = engine.lock().await;
+            eng.stop().await;
+            return Err(format!("falha ao trocar DNS do sistema: {e}"));
+        }
+    } else {
+        // Ordem importa: restaura o DNS ANTES de matar o proxy. Se matasse
+        // primeiro, haveria uma janela de segundos em que o sistema ainda
+        // aponta pra 127.0.0.1:53 mas ninguém está escutando → DNS quebrado.
+        if let Err(e) = system_dns::restore_if_any(&conn).await {
+            tracing::warn!(error = %e, "falha ao restaurar DNS — seguindo pra parar engine");
+        }
+        let mut eng = engine.lock().await;
+        eng.stop().await;
     }
-    // Persiste flag + user ativo para reativação no próximo boot do app.
+
     db::set_blocking_enabled(&conn, enabled)
         .await
         .map_err(stringify)?;
@@ -143,9 +169,13 @@ pub async fn set_blocking_enabled(
 #[tauri::command]
 pub async fn set_adult_filter_enabled(
     conn: State<'_, Connection>,
+    adult_filter: State<'_, Arc<AdultFilter>>,
     enabled: bool,
 ) -> Result<(), String> {
-    // TODO(etapa 8): integrar com adult_filter (Bloom Filter de domínios).
+    // AtomicBool primeiro (o DNS proxy vê o toggle imediatamente na próxima
+    // query); persistência depois, pra que o próximo boot recarregue o mesmo
+    // estado no AdultFilter::new.
+    adult_filter.set_enabled(enabled);
     db::set_adult_filter_enabled(&conn, enabled)
         .await
         .map_err(stringify)
@@ -154,18 +184,21 @@ pub async fn set_adult_filter_enabled(
 #[tauri::command]
 pub async fn get_blocking_status(
     conn: State<'_, Connection>,
+    adult_filter: State<'_, Arc<AdultFilter>>,
     user_id: String,
 ) -> Result<BlockingStatus, String> {
     let enabled = db::get_blocking_enabled(&conn).await.map_err(stringify)?;
     let adult_filter_enabled = db::get_adult_filter_enabled(&conn)
         .await
         .map_err(stringify)?;
+    let adult_filter_building = adult_filter_enabled && !adult_filter.is_built();
     let items = db::list_blocked_items(&conn, user_id)
         .await
         .map_err(stringify)?;
     Ok(BlockingStatus {
         enabled,
         adult_filter_enabled,
+        adult_filter_building,
         item_count: items.len(),
     })
 }

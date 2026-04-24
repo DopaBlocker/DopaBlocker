@@ -44,6 +44,8 @@ export interface AdultFilterSettings {
 export interface BlockingStatus {
     enabled: boolean;
     adult_filter_enabled: boolean;
+    /** True quando o filtro adulto está ligado mas o Bloom ainda está sendo baixado/populado. */
+    adult_filter_building: boolean;
     item_count: number;
 }
 

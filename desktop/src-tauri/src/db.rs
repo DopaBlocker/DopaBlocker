@@ -218,10 +218,7 @@ pub async fn upsert_blocked_item(conn: &Connection, item: BlockedItem) -> DbResu
 
 pub async fn delete_blocked_item(conn: &Connection, id: String) -> DbResult<()> {
     conn.call(move |c| {
-        c.execute(
-            "DELETE FROM blocked_items_cache WHERE id = ?1",
-            params![id],
-        )?;
+        c.execute("DELETE FROM blocked_items_cache WHERE id = ?1", params![id])?;
         Ok(())
     })
     .await?;
@@ -294,6 +291,17 @@ pub async fn get_state(conn: &Connection, key: &'static str) -> DbResult<Option<
         })
         .await?;
     Ok(v)
+}
+
+/// Remove uma chave do blocking_state. Diferente de set com string vazia —
+/// `get_state` precisa distinguir "nunca gravado" de "gravado vazio".
+pub async fn clear_state(conn: &Connection, key: &'static str) -> DbResult<()> {
+    conn.call(move |c| {
+        c.execute("DELETE FROM blocking_state WHERE key = ?1", params![key])?;
+        Ok(())
+    })
+    .await?;
+    Ok(())
 }
 
 pub async fn set_blocking_enabled(conn: &Connection, enabled: bool) -> DbResult<()> {

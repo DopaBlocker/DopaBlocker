@@ -4,11 +4,13 @@
 -->
 <script lang="ts">
     import { onMount } from 'svelte';
-    import { authStore, type AuthState } from '$lib/stores/auth';
+    import { AUTH_BOOTING_STATE, authStore, type AuthState } from '$lib/stores/auth';
     import { getAppVersion } from '$lib/services/tauri-bridge';
+    import ConfirmModal from '$lib/components/ui/ConfirmModal.svelte';
 
-    let auth: AuthState = $state({ user: null, loading: true, error: null });
+    let auth: AuthState = $state({ ...AUTH_BOOTING_STATE });
     let appVersion: string | null = $state(null);
+    let confirmOpen = $state(false);
 
     onMount(() => {
         const unsub = authStore.subscribe((s) => (auth = s));
@@ -27,7 +29,8 @@
             .join('');
     }
 
-    function logout() {
+    function confirmLogout() {
+        confirmOpen = false;
         void authStore.logout();
     }
 </script>
@@ -84,8 +87,19 @@
     </div>
 
     <div class="flex justify-end">
-        <button type="button" onclick={logout} class="btn-danger">
+        <button type="button" onclick={() => (confirmOpen = true)} class="btn-danger">
             Sair da conta
         </button>
     </div>
 </div>
+
+<ConfirmModal
+    open={confirmOpen}
+    title="Sair da conta?"
+    message="Você vai precisar entrar de novo pra continuar usando. O bloqueio ativo continua rodando se estiver ligado."
+    confirmLabel="Sair"
+    cancelLabel="Ficar"
+    danger
+    onconfirm={confirmLogout}
+    oncancel={() => (confirmOpen = false)}
+/>

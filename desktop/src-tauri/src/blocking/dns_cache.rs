@@ -95,9 +95,13 @@ impl DnsCache {
     /// registros answer+authority da resposta, grampeado em `[MIN_TTL, MAX_TTL]`.
     /// Se a mensagem não tiver nenhum registro (ex: NOERROR vazio), usa MIN_TTL.
     pub async fn put(&self, query: &Message, response: &[u8]) {
-        let Some(key) = Self::key_from_query(query) else { return };
+        let Some(key) = Self::key_from_query(query) else {
+            return;
+        };
 
-        let Ok(resp_msg) = Message::from_vec(response) else { return };
+        let Ok(resp_msg) = Message::from_vec(response) else {
+            return;
+        };
         // Só cacheamos respostas NOERROR — NXDOMAIN, SERVFAIL, etc. podem ser
         // transientes e devem ser re-perguntados. (Bloqueio nosso nunca passa
         // por aqui; synthesize-a-cada-vez.)

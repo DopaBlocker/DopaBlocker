@@ -6,14 +6,19 @@
 <script lang="ts">
     import { goto } from '$app/navigation';
     import { onMount } from 'svelte';
-    import { authStore, type AuthState } from '$lib/stores/auth';
+    import { AUTH_BOOTING_STATE, authStore, type AuthState } from '$lib/stores/auth';
     import { blockingStore, type BlockingState } from '$lib/stores/blocking';
     import { getAppVersion } from '$lib/services/tauri-bridge';
 
-    let auth: AuthState = $state({ user: null, loading: true, error: null });
+    let auth: AuthState = $state({ ...AUTH_BOOTING_STATE });
     let block: BlockingState = $state({
         items: [],
-        status: { enabled: false, adult_filter_enabled: false, item_count: 0 },
+        status: {
+            enabled: false,
+            adult_filter_enabled: false,
+            adult_filter_building: false,
+            item_count: 0,
+        },
         loading: false,
         error: null,
     });

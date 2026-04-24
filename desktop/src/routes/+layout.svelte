@@ -10,36 +10,66 @@
     import { goto } from '$app/navigation';
     import { page } from '$app/state';
     import { onMount } from 'svelte';
-    import { authStore, type AuthState } from '$lib/stores/auth';
+    import { AUTH_BOOTING_STATE, authStore, type AuthState } from '$lib/stores/auth';
+    import OnboardingModal from '$lib/components/OnboardingModal.svelte';
+    import ConfirmModal from '$lib/components/ui/ConfirmModal.svelte';
+    import ToastContainer from '$lib/components/ui/Toast.svelte';
     import '../app.css';
 
     const PUBLIC_ROUTES = ['/login'];
+    const ONBOARDING_KEY_PREFIX = 'dopablocker:onboarding:';
 
     let { children } = $props();
-    let auth: AuthState = $state({ user: null, loading: true, error: null });
+    let auth: AuthState = $state({ ...AUTH_BOOTING_STATE });
+    let onboardingOpen = $state(false);
 
     onMount(() => {
         authStore.init();
-        const unsub = authStore.subscribe((s) => (auth = s));
+        const unsub = authStore.subscribe((s) => {
+            auth = s;
+            // Onboarding: primeira vez que um user aparece autenticado neste
+            // localStorage, abre o modal. Escopo por-user pra que múltiplas
+            // contas na mesma máquina vejam cada uma uma vez.
+            if (s.user) {
+                const key = ONBOARDING_KEY_PREFIX + s.user.id;
+                if (localStorage.getItem(key) !== 'done') {
+                    onboardingOpen = true;
+                }
+            }
+        });
         return unsub;
     });
+
+    function completeOnboarding() {
+        onboardingOpen = false;
+        if (auth.user) {
+            localStorage.setItem(ONBOARDING_KEY_PREFIX + auth.user.id, 'done');
+        }
+    }
 
     function isPublicRoute(path: string): boolean {
         return PUBLIC_ROUTES.some((r) => path === r || path.startsWith(r + '/'));
     }
 
     $effect(() => {
-        if (auth.loading) return;
+        if (auth.phase === 'booting' || auth.phase === 'authenticating') return;
         const path = page.url.pathname;
         const publicRoute = isPublicRoute(path);
-        if (!auth.user && !publicRoute) {
+        if (auth.phase !== 'authenticated' && !publicRoute) {
             goto('/login', { replaceState: true });
-        } else if (auth.user && publicRoute) {
+        } else if (auth.phase === 'authenticated' && publicRoute) {
             goto('/', { replaceState: true });
         }
     });
 
-    function handleLogout() {
+    let logoutConfirmOpen = $state(false);
+
+    function requestLogout() {
+        logoutConfirmOpen = true;
+    }
+
+    function confirmLogout() {
+        logoutConfirmOpen = false;
         void authStore.logout();
     }
 
@@ -59,11 +89,11 @@
     }
 </script>
 
-{#if auth.loading}
+{#if auth.phase === 'booting' || auth.phase === 'authenticating'}
     <div class="flex min-h-screen items-center justify-center bg-bg">
         <div class="text-xs text-text-muted">Carregando…</div>
     </div>
-{:else if !auth.user || isPublicRoute(page.url.pathname)}
+{:else if auth.phase !== 'authenticated' || isPublicRoute(page.url.pathname)}
     {@render children()}
 {:else}
     <div class="flex min-h-screen bg-bg text-text">
@@ -137,13 +167,13 @@
             <div class="mt-auto flex flex-col gap-3 pt-6">
                 <div class="rounded-md border border-border bg-surface-2 px-3 py-2.5">
                     <div class="truncate text-xs font-medium text-text">
-                        {auth.user.display_name || auth.user.email}
+                        {auth.user!.display_name || auth.user!.email}
                     </div>
                     <div class="truncate text-[11px] text-text-dim">
-                        {auth.user.email}
+                        {auth.user!.email}
                     </div>
                 </div>
-                <button type="button" onclick={handleLogout} class="btn-ghost w-full justify-start">
+                <button type="button" onclick={requestLogout} class="btn-ghost w-full justify-start">
                     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
                         class="h-4 w-4">
                         <path d="M10 11l3-3-3-3M13 8H6M9 13H3a1 1 0 01-1-1V4a1 1 0 011-1h6"
@@ -160,4 +190,18 @@
             </div>
         </main>
     </div>
+
+    <OnboardingModal open={onboardingOpen} onclose={completeOnboarding} />
+    <ConfirmModal
+        open={logoutConfirmOpen}
+        title="Sair da conta?"
+        message="Você vai precisar entrar de novo pra continuar usando. O bloqueio ativo continua rodando se estiver ligado."
+        confirmLabel="Sair"
+        cancelLabel="Ficar"
+        danger
+        onconfirm={confirmLogout}
+        oncancel={() => (logoutConfirmOpen = false)}
+    />
 {/if}
+
+<ToastContainer />

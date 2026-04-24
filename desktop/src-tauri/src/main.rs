@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-  dopablocker_desktop_lib::run();
+    dopablocker_desktop_lib::run();
 }

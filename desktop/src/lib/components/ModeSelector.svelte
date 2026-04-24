@@ -53,10 +53,10 @@
             class:hover:border-border-strong={!active}
             class:bg-surface={!active}
         >
-            <div class="flex w-full items-center justify-between">
+            <div class="flex w-full items-center justify-between gap-2">
                 <span class="text-sm font-medium text-text">{option.label}</span>
                 {#if !option.available}
-                    <span class="badge-secondary">Em breve</span>
+                    <span class="badge-secondary shrink-0">Em breve</span>
                 {/if}
             </div>
             <p class="text-xs leading-relaxed text-text-muted">

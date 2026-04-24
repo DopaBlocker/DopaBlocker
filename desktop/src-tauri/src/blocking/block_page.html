@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DopaBlocker — Bloqueado</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      background: #08080b;
+      color: #ededf0;
+      font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      display: flex;
+      flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+    }
+    header {
+      padding: 24px 40px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, #1e40af 0%, #6b21a8 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .mark::after {
+      content: '';
+      width: 12px;
+      height: 12px;
+      background: rgba(255, 255, 255, 0.92);
+      border-radius: 2px;
+    }
+    .brand {
+      font-weight: 600;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+    }
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+      text-align: center;
+    }
+    h1 {
+      font-size: clamp(32px, 6vw, 56px);
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      margin: 0 0 32px;
+      line-height: 1.05;
+    }
+    .quote {
+      color: #8d8d97;
+      font-size: 17px;
+      line-height: 1.65;
+      margin: 0;
+      max-width: 640px;
+    }
+    footer {
+      padding: 24px 40px;
+      font-size: 11px;
+      color: #56565e;
+      letter-spacing: 0.04em;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="mark" aria-hidden="true"></div>
+    <span class="brand">DopaBlocker</span>
+  </header>
+  <main>
+    <h1>Este site está bloqueado.</h1>
+    <p class="quote">{{QUOTE}}</p>
+  </main>
+  <footer>VOLTE AO QUE IMPORTA</footer>
+</body>
+</html>

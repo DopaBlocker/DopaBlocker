@@ -12,19 +12,24 @@
     import { onMount } from 'svelte';
     import { authStore, type AuthState } from '$lib/stores/auth';
     import { blockingStore, type BlockingState } from '$lib/stores/blocking';
+    import { toast } from '$lib/stores/toast';
     import BlockList from '$lib/components/BlockList.svelte';
     import AddBlockModal from '$lib/components/AddBlockModal.svelte';
     import type { BlockedType } from '$lib/types';
 
     let block: BlockingState = $state({
         items: [],
-        status: { enabled: false, adult_filter_enabled: false, item_count: 0 },
+        status: {
+            enabled: false,
+            adult_filter_enabled: false,
+            adult_filter_building: false,
+            item_count: 0,
+        },
         loading: false,
         error: null,
     });
     let currentUserId: string | null = $state(null);
     let modalOpen = $state(false);
-    let pageError: string | null = $state(null);
 
     onMount(() => {
         const unsubA = authStore.subscribe((s: AuthState) => {
@@ -38,35 +43,43 @@
         };
     });
 
+    function reportError(err: unknown, fallback: string) {
+        const msg = err instanceof Error ? err.message : String(err);
+        toast.error(msg || fallback);
+    }
+
     async function handleAdd(type: BlockedType, value: string) {
         await blockingStore.addItem(type, value);
+        toast.success('Bloqueio adicionado');
     }
 
     async function handleRemove(id: string) {
-        pageError = null;
         try {
             await blockingStore.removeItem(id);
+            toast.info('Item removido');
         } catch (err) {
-            pageError = err instanceof Error ? err.message : String(err);
+            reportError(err, 'Falha ao remover item');
         }
     }
 
     async function handleToggleEngine() {
         if (!currentUserId) return;
-        pageError = null;
+        const target = !block.status.enabled;
         try {
-            await blockingStore.toggleEngine(currentUserId, !block.status.enabled);
+            await blockingStore.toggleEngine(currentUserId, target);
+            toast.success(target ? 'Bloqueio ativado' : 'Bloqueio pausado');
         } catch (err) {
-            pageError = err instanceof Error ? err.message : String(err);
+            reportError(err, 'Falha ao alternar bloqueio');
         }
     }
 
     async function handleToggleAdult() {
-        pageError = null;
+        const target = !block.status.adult_filter_enabled;
         try {
-            await blockingStore.toggleAdultFilter(!block.status.adult_filter_enabled);
+            await blockingStore.toggleAdultFilter(target);
+            toast.info(target ? 'Filtro adulto ligado' : 'Filtro adulto desligado');
         } catch (err) {
-            pageError = err instanceof Error ? err.message : String(err);
+            reportError(err, 'Falha ao alternar filtro adulto');
         }
     }
 </script>
@@ -91,14 +104,6 @@
             Adicionar
         </button>
     </header>
-
-    {#if pageError}
-        <div
-            class="rounded-md border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger"
-        >
-            {pageError}
-        </div>
-    {/if}
 
     <!-- Engine master toggle. -->
     <div class="card-padded flex items-center justify-between gap-4">
@@ -130,9 +135,18 @@
     <!-- Filtro adulto. -->
     <div class="card-padded flex items-center justify-between gap-4">
         <div>
-            <div class="text-sm font-medium text-text">Filtro de conteúdo adulto</div>
+            <div class="flex items-center gap-2">
+                <span class="text-sm font-medium text-text">Filtro de conteúdo adulto</span>
+                {#if block.status.adult_filter_building}
+                    <span class="badge-secondary">Construindo…</span>
+                {/if}
+            </div>
             <div class="mt-0.5 text-xs text-text-muted">
-                Adiciona uma lista curada de domínios adultos ao bloqueio.
+                {#if block.status.adult_filter_building}
+                    Baixando lista de domínios. O bloqueio começa a valer em instantes.
+                {:else}
+                    Adiciona uma lista curada de domínios adultos ao bloqueio.
+                {/if}
             </div>
         </div>
         <button

@@ -3,6 +3,12 @@
 // insert(domain), contains(domain). Carregar listas open-source (Steven Black / OISD)
 // e popular o filtro na inicialização do app.
 
+use serde::{Deserialize, Serialize};
+
+/// `Clone` habilita espalhar via `Arc` em leitores concorrentes; `Serialize`/
+/// `Deserialize` permite persistir o filtro já populado em disco (bincode)
+/// pra pular a reconstrução em boots seguintes.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BloomFilter {
     bit_array: Vec<bool>,
     num_hashes: usize,

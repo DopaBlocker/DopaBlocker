@@ -1,15 +1,16 @@
-<!--
-  Login/cadastro. Abas Entrar/Cadastrar.
-  - Entrar: email+senha OU Google.
-  - Cadastrar: nome+email+senha + ModeSelector. Clicar em "Pessoal" dispara o
-    cadastro; Pais/Filhos mostram banner "Em breve" e não avançam.
--->
 <script lang="ts">
-    import { authStore } from '$lib/stores/auth';
+    import { onMount } from 'svelte';
+
+    import {
+        AUTH_BOOTING_STATE,
+        authStore,
+        type AuthState,
+    } from '$lib/stores/auth';
     import ModeSelector from './ModeSelector.svelte';
 
     type Tab = 'signin' | 'signup';
 
+    let auth: AuthState = $state({ ...AUTH_BOOTING_STATE });
     let tab: Tab = $state('signin');
     let email = $state('');
     let password = $state('');
@@ -17,13 +18,71 @@
     let formError: string | null = $state(null);
     let infoMessage: string | null = $state(null);
     let submitting = $state(false);
+    let lastFirebaseIdentityUid: string | null = $state(null);
+
+    const pendingLocalRegistration = $derived(auth.phase === 'pending_local_registration');
+    const backendUnavailable = $derived(auth.phase === 'backend_unavailable');
+    const firebaseIdentity = $derived(auth.firebase_user);
+
+    onMount(() => {
+        return authStore.subscribe((state) => {
+            auth = state;
+
+            const shouldAdoptFirebaseIdentity =
+                state.phase === 'pending_local_registration' ||
+                state.firebase_user?.uid !== lastFirebaseIdentityUid;
+
+            if (
+                state.firebase_user?.email &&
+                (!email.trim() || shouldAdoptFirebaseIdentity)
+            ) {
+                email = state.firebase_user.email;
+            }
+
+            if (
+                state.firebase_user?.display_name &&
+                (!displayName.trim() || shouldAdoptFirebaseIdentity)
+            ) {
+                displayName = state.firebase_user.display_name;
+            }
+
+            lastFirebaseIdentityUid = state.firebase_user?.uid ?? null;
+
+            if (state.phase === 'pending_local_registration') {
+                tab = 'signup';
+                password = '';
+                infoMessage =
+                    'Sua conta ja entrou no Firebase. Falta concluir o cadastro local para entrar no app.';
+                formError = state.error;
+                return;
+            }
+
+            if (state.phase === 'backend_unavailable') {
+                infoMessage =
+                    'O Firebase autenticou, mas o backend local nao respondeu. Tente sincronizar novamente.';
+                formError = state.error;
+                return;
+            }
+
+            if (state.error) {
+                formError = state.error;
+            }
+        });
+    });
 
     function resetFeedback() {
         formError = null;
         infoMessage = null;
+        authStore.clearError();
     }
 
     function switchTab(next: Tab) {
+        if (pendingLocalRegistration && next === 'signin') {
+            tab = 'signup';
+            infoMessage = 'Conclua o cadastro local abaixo para destravar o app.';
+            return;
+        }
+
         tab = next;
         resetFeedback();
     }
@@ -31,6 +90,7 @@
     async function handleSignIn(e: Event) {
         e.preventDefault();
         if (submitting) return;
+
         resetFeedback();
         submitting = true;
         try {
@@ -44,6 +104,7 @@
 
     async function handleGoogle() {
         if (submitting) return;
+
         resetFeedback();
         submitting = true;
         try {
@@ -55,27 +116,74 @@
         }
     }
 
+    async function handleRetryBackendSync() {
+        if (submitting) return;
+
+        resetFeedback();
+        submitting = true;
+        try {
+            await authStore.retryBackendSync();
+        } finally {
+            submitting = false;
+        }
+    }
+
     async function handleModeSelect(mode: 'personal' | 'parent' | 'child') {
         if (submitting) return;
+
         resetFeedback();
 
         if (mode !== 'personal') {
-            infoMessage = 'Esse modo chega na v0.2 — por ora só o Pessoal está disponível.';
+            infoMessage = 'Esse modo chega na v0.2 - por ora so o Pessoal esta disponivel.';
             return;
         }
 
-        const name = displayName.trim();
-        const mail = email.trim();
-        if (!name || !mail || !password) {
+        const name =
+            displayName.trim() ||
+            firebaseIdentity?.display_name ||
+            email.trim().split('@')[0] ||
+            '';
+        const mail = firebaseIdentity?.email || email.trim();
+
+        if (!mail) {
+            formError = 'Nao conseguimos ler o email da sua sessao. Entre novamente.';
+            return;
+        }
+
+        if (!name) {
+            formError = 'Preencha seu nome antes de continuar.';
+            return;
+        }
+
+        if (!pendingLocalRegistration && !password) {
             formError = 'Preencha nome, email e senha antes de escolher o modo.';
             return;
         }
 
         submitting = true;
         try {
-            await authStore.register(mail, password, name, 'personal');
+            if (pendingLocalRegistration) {
+                await authStore.completeLocalRegistration('personal', name);
+            } else {
+                await authStore.register(mail, password, name, 'personal');
+            }
         } catch (err) {
             formError = err instanceof Error ? err.message : String(err);
+        } finally {
+            submitting = false;
+        }
+    }
+
+    async function handleUseAnotherAccount() {
+        if (submitting) return;
+
+        resetFeedback();
+        submitting = true;
+        try {
+            await authStore.logout();
+            email = '';
+            password = '';
+            displayName = '';
         } finally {
             submitting = false;
         }
@@ -83,7 +191,6 @@
 </script>
 
 <div class="w-full max-w-md">
-    <!-- Logo mark + wordmark. -->
     <div class="mb-8 flex flex-col items-center gap-3 text-center">
         <div
             class="flex h-10 w-10 items-center justify-center rounded-lg"
@@ -94,7 +201,7 @@
         <div>
             <h1 class="text-lg font-semibold tracking-tight text-text">DopaBlocker</h1>
             <p class="mt-1 text-xs text-text-muted">
-                Bloqueie distrações. Mantenha o foco.
+                Bloqueie distracoes. Mantenha o foco.
             </p>
         </div>
     </div>
@@ -108,6 +215,7 @@
             class:text-white={tab === 'signin'}
             class:text-text-muted={tab !== 'signin'}
             class:hover:text-text={tab !== 'signin'}
+            disabled={pendingLocalRegistration}
         >
             Entrar
         </button>
@@ -120,7 +228,7 @@
             class:text-text-muted={tab !== 'signup'}
             class:hover:text-text={tab !== 'signup'}
         >
-            Cadastrar
+            {pendingLocalRegistration ? 'Concluir cadastro' : 'Cadastrar'}
         </button>
     </div>
 
@@ -145,11 +253,11 @@
                     autocomplete="current-password"
                     bind:value={password}
                     class="input"
-                    placeholder="••••••••"
+                    placeholder="********"
                 />
             </label>
             <button type="submit" disabled={submitting} class="btn-primary mt-2 w-full">
-                {submitting ? 'Entrando…' : 'Entrar'}
+                {submitting ? 'Entrando...' : 'Entrar'}
             </button>
         </form>
 
@@ -185,6 +293,14 @@
                 void handleModeSelect('personal');
             }}
         >
+            {#if pendingLocalRegistration}
+                <div
+                    class="rounded-md border border-secondary/50 bg-secondary/10 px-3 py-2 text-xs text-secondary"
+                >
+                    Seu login Firebase ja esta pronto. Falta criar o registro local desta maquina.
+                </div>
+            {/if}
+
             <label class="flex flex-col gap-1.5">
                 <span class="field-label">Nome</span>
                 <input
@@ -205,26 +321,56 @@
                     bind:value={email}
                     class="input"
                     placeholder="voce@exemplo.com"
-                />
-            </label>
-            <label class="flex flex-col gap-1.5">
-                <span class="field-label">Senha</span>
-                <input
-                    type="password"
-                    required
-                    minlength={6}
-                    autocomplete="new-password"
-                    bind:value={password}
-                    class="input"
-                    placeholder="Mínimo 6 caracteres"
+                    readonly={pendingLocalRegistration && !!firebaseIdentity?.email}
                 />
             </label>
 
+            {#if !pendingLocalRegistration}
+                <label class="flex flex-col gap-1.5">
+                    <span class="field-label">Senha</span>
+                    <input
+                        type="password"
+                        required
+                        minlength={6}
+                        autocomplete="new-password"
+                        bind:value={password}
+                        class="input"
+                        placeholder="Minimo 6 caracteres"
+                    />
+                </label>
+            {/if}
+
             <div class="mt-2">
-                <div class="field-label mb-2">Escolha o modo</div>
+                <div class="field-label mb-2">
+                    {pendingLocalRegistration
+                        ? 'Escolha o modo local para concluir'
+                        : 'Escolha o modo'}
+                </div>
                 <ModeSelector onselect={handleModeSelect} />
             </div>
         </form>
+    {/if}
+
+    {#if backendUnavailable && firebaseIdentity}
+        <button
+            type="button"
+            onclick={handleRetryBackendSync}
+            disabled={submitting}
+            class="btn-secondary mt-4 w-full"
+        >
+            {submitting ? 'Sincronizando...' : 'Tentar novamente com o backend local'}
+        </button>
+    {/if}
+
+    {#if firebaseIdentity && auth.phase !== 'authenticated'}
+        <button
+            type="button"
+            onclick={handleUseAnotherAccount}
+            disabled={submitting}
+            class="btn-ghost mt-3 w-full justify-center"
+        >
+            {submitting ? 'Limpando sessao...' : 'Entrar com outra conta'}
+        </button>
     {/if}
 
     {#if formError}
@@ -234,6 +380,7 @@
             {formError}
         </div>
     {/if}
+
     {#if infoMessage}
         <div
             class="mt-4 rounded-md border border-secondary/50 bg-secondary/10 px-3 py-2 text-xs text-secondary"

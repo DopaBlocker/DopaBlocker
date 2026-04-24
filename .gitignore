@@ -51,3 +51,4 @@ ui-debug.log
 *.pid
 
 .cursor/
+.claude/

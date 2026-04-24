@@ -1,19 +1,10 @@
 // =============================================================================
 // Pool de resolvers upstream com failover.
 // =============================================================================
-// Ordem tentada (primeira que responder vence):
-//   1. DoH Cloudflare  — HTTPS encryptado, sem bisbilhoteiro no meio.
-//   2. DoH Google      — mesmo, backup independente.
-//   3. UDP 1.1.1.1     — fallback simples caso HTTPS esteja bloqueado/caído.
-//   4. UDP 8.8.8.8     — fallback final.
-//
-// Por que DoH primeiro, e UDP como último recurso? O app é de foco/privacidade
-// — não faz sentido o provedor de internet ver toda query permitida. Mas em
-// redes restritivas (hotel, corporate) o 443 pode estar bloqueado pra DNS;
-// nesses casos o UDP salva a pátria.
-//
-// Cada tentativa tem timeout individual. Se todas falharem, devolve erro;
-// o caller escolhe o que fazer (tipicamente: SERVFAIL pro cliente).
+// Precisamos evitar duas armadilhas:
+//   1. O proxy nao pode depender do proprio DNS local para resolver os hosts
+//      DoH, senao criamos recursao.
+//   2. O fallback UDP continua existindo para redes que derrubam DoH.
 // =============================================================================
 
 use std::{net::SocketAddr, time::Duration};
@@ -27,9 +18,7 @@ const MAX_DNS_PACKET: usize = 4096;
 
 #[derive(Clone)]
 enum Upstream {
-    /// URL `https://.../dns-query` falando RFC 8484 (application/dns-message).
     Doh(String),
-    /// Resolver plaintext na porta 53. Quase sempre `1.1.1.1:53` / `8.8.8.8:53`.
     Udp(SocketAddr),
 }
 
@@ -41,13 +30,7 @@ pub struct UpstreamPool {
 
 impl UpstreamPool {
     pub fn default_cloudflare_google() -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(DOH_TIMEOUT)
-            // HTTP/2 com keep-alive para reusar conexão entre queries. DoH
-            // sem isso faz TLS handshake a cada query e fica inviável.
-            .pool_idle_timeout(Duration::from_secs(90))
-            .build()
-            .expect("reqwest::Client deveria construir com defaults");
+        let http = build_doh_http_client();
 
         Self {
             upstreams: vec![
@@ -60,9 +43,6 @@ impl UpstreamPool {
         }
     }
 
-    /// Tenta cada upstream em ordem. Retorna a primeira resposta com status
-    /// HTTP 2xx (DoH) ou que chegou antes do timeout (UDP). Se todos falharem,
-    /// retorna erro com o motivo do último.
     pub async fn resolve(&self, query: &[u8]) -> Result<Vec<u8>> {
         let mut last_err: Option<anyhow::Error> = None;
         for up in &self.upstreams {
@@ -101,10 +81,41 @@ impl UpstreamPool {
     }
 }
 
+fn build_doh_http_client() -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .timeout(DOH_TIMEOUT)
+        .pool_idle_timeout(Duration::from_secs(90));
+
+    for host in ["cloudflare-dns.com", "dns.google"] {
+        let addrs = bootstrap_addrs_for_host(host);
+        if !addrs.is_empty() {
+            builder = builder.resolve_to_addrs(host, &addrs);
+        }
+    }
+
+    builder
+        .build()
+        .expect("reqwest::Client deveria construir com defaults")
+}
+
+fn bootstrap_addrs_for_host(host: &str) -> Vec<SocketAddr> {
+    match host {
+        "cloudflare-dns.com" => vec![
+            SocketAddr::from(([1, 1, 1, 1], 0)),
+            SocketAddr::from(([1, 0, 0, 1], 0)),
+        ],
+        "dns.google" => vec![
+            SocketAddr::from(([8, 8, 8, 8], 0)),
+            SocketAddr::from(([8, 8, 4, 4], 0)),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 async fn resolve_udp(upstream: SocketAddr, query: &[u8]) -> Result<Vec<u8>> {
     let sock = UdpSocket::bind("0.0.0.0:0")
         .await
-        .context("UDP: bind efêmero")?;
+        .context("UDP: bind efemero")?;
     sock.send_to(query, upstream).await.context("UDP: send")?;
     let mut buf = vec![0u8; MAX_DNS_PACKET];
     let (n, _) = timeout(UDP_TIMEOUT, sock.recv_from(&mut buf))
@@ -120,5 +131,29 @@ impl std::fmt::Debug for Upstream {
             Upstream::Doh(url) => write!(f, "DoH({url})"),
             Upstream::Udp(addr) => write!(f, "UDP({addr})"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_addrs_cover_builtin_doh_hosts() {
+        assert_eq!(
+            bootstrap_addrs_for_host("cloudflare-dns.com"),
+            vec![
+                SocketAddr::from(([1, 1, 1, 1], 0)),
+                SocketAddr::from(([1, 0, 0, 1], 0)),
+            ]
+        );
+        assert_eq!(
+            bootstrap_addrs_for_host("dns.google"),
+            vec![
+                SocketAddr::from(([8, 8, 8, 8], 0)),
+                SocketAddr::from(([8, 8, 4, 4], 0)),
+            ]
+        );
+        assert!(bootstrap_addrs_for_host("example.com").is_empty());
     }
 }

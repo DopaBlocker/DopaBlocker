@@ -1,28 +1,3 @@
-// =============================================================================
-// Rotas de autenticação: /auth/register, /auth/login, /auth/me
-// =============================================================================
-// O fluxo do usuário é:
-//
-//   1. Frontend faz login no Firebase SDK (email/senha ou Google).
-//      → Firebase retorna um JWT.
-//   2. Primeira vez na vida: frontend chama POST /auth/register enviando
-//      email + display_name + mode no body e o JWT no header. O backend
-//      valida o JWT, extrai o `firebase_uid` das claims, e cria o user
-//      local em `users`.
-//   3. Das próximas vezes: frontend chama POST /auth/login com o JWT no
-//      header (body vazio). O backend valida, procura o user local e
-//      devolve.
-//   4. A qualquer momento: GET /auth/me retorna os dados do user
-//      autenticado (usa o AuthUser injetado pelo middleware).
-//
-// Por que `register` e `login` são "públicas" (não passam pelo middleware
-// global)? Porque o middleware global também faz lookup do user em
-// `users` — se o user não existe ainda, retorna 401. Mas o register é
-// justamente a rota que CRIA o user, e o login precisa funcionar até
-// para usuários que ainda não completaram o fluxo de register. Então
-// ambas validam o JWT inline, sem o lookup forçado.
-// =============================================================================
-
 use axum::{
     extract::State,
     http::HeaderMap,
@@ -31,76 +6,101 @@ use axum::{
 };
 
 use crate::errors::AppError;
-use crate::middleware::{extract_bearer_token, verify_firebase_jwt_token, AuthUser};
+use crate::middleware::{
+    extract_bearer_token, verify_firebase_jwt_token, AuthUser, FirebaseClaims,
+};
 use crate::models::{RegisterRequest, User};
 use crate::services::user_service;
 use crate::AppState;
 
-/// Rotas que NÃO passam pelo middleware global `require_auth`.
-/// Ambas validam o Firebase JWT manualmente dentro do próprio handler.
 pub fn public_router() -> Router<AppState> {
     Router::new()
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
 }
 
-/// Rotas protegidas: o middleware global já validou o token e injetou
-/// `AuthUser`, então o handler só faz trabalho de domínio.
 pub fn protected_router() -> Router<AppState> {
     Router::new().route("/auth/me", get(me))
 }
 
-/// Cria o user LOCAL correspondente a um user Firebase recém-criado.
-///
-/// Pré-condições:
-///   - Frontend já criou o user no Firebase Auth.
-///   - Header `Authorization: Bearer <jwt>` acompanha a requisição.
-///   - Body tem email, display_name, mode.
-///
-/// Comportamento:
-///   - Se o firebase_uid das claims já existe em `users`, retorna 409.
-///   - Senão, insere e retorna o User criado.
+fn resolve_registration_identity(
+    claims: &FirebaseClaims,
+    payload: &RegisterRequest,
+) -> Result<(String, String), AppError> {
+    let body_email = payload.email.trim();
+    let claim_email = claims
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let email = match claim_email {
+        Some(claim_email) => {
+            if !body_email.is_empty() && !body_email.eq_ignore_ascii_case(claim_email) {
+                return Err(AppError::BadRequest(
+                    "O email informado nao corresponde ao email autenticado no Firebase".into(),
+                ));
+            }
+            claim_email.to_string()
+        }
+        None if !body_email.is_empty() => body_email.to_string(),
+        None => {
+            return Err(AppError::BadRequest(
+                "Nao foi possivel determinar o email autenticado".into(),
+            ));
+        }
+    };
+
+    let display_name = claims
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let body_name = payload.display_name.trim();
+            (!body_name.is_empty()).then(|| body_name.to_string())
+        })
+        .unwrap_or_else(|| fallback_display_name(&email));
+
+    Ok((email, display_name))
+}
+
+fn fallback_display_name(email: &str) -> String {
+    email
+        .split('@')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Usuario")
+        .to_string()
+}
+
 async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(payload): Json<RegisterRequest>,
 ) -> Result<Json<User>, AppError> {
-    // Validação do JWT inline — precisamos do `sub` (firebase_uid) para
-    // amarrar o user local. O body NÃO carrega firebase_uid: se carregasse,
-    // qualquer cliente poderia registrar um user com identidade forjada.
     let token = extract_bearer_token(&headers)?;
     let claims = verify_firebase_jwt_token(&state, &token).await?;
 
-    // Idempotência mal-cabida: se alguém chamar register duas vezes com o
-    // mesmo Firebase user, preferimos avisar (409) a silenciosamente retornar
-    // o user existente — o frontend deve usar login nesse caso.
     if let Some(existing) =
         user_service::get_user_by_firebase_uid(&state.db, claims.sub.clone()).await?
     {
         return Err(AppError::Conflict(format!(
-            "Usuário já registrado: {}",
+            "Usuario ja registrado: {}",
             existing.email
         )));
     }
 
-    let user = user_service::create_user(
-        &state.db,
-        claims.sub,
-        payload.email,
-        payload.display_name,
-        payload.mode,
-    )
-    .await?;
+    let (email, display_name) = resolve_registration_identity(&claims, &payload)?;
+
+    let user =
+        user_service::create_user(&state.db, claims.sub, email, display_name, payload.mode)
+            .await?;
     Ok(Json(user))
 }
 
-/// "Sincroniza" o user local com o Firebase. Body vazio, JWT no header.
-/// Retorna o User já existente, ou 404 se o frontend ainda não chamou
-/// /auth/register para este Firebase UID.
-///
-/// Optamos por NÃO fazer get-or-create aqui: forçar o register explícito
-/// evita que um JWT válido de um user que não completou onboarding crie
-/// silenciosamente um registro incompleto (sem `mode` escolhido, etc.).
 async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -111,17 +111,84 @@ async fn login(
     let user = user_service::get_user_by_firebase_uid(&state.db, claims.sub.clone())
         .await?
         .ok_or_else(|| {
-            AppError::NotFound("Usuário não registrado localmente — chame /auth/register".into())
+            AppError::NotFound("Usuario nao registrado localmente - chame /auth/register".into())
         })?;
+
     Ok(Json(user))
 }
 
-/// Retorna os dados do user autenticado. Como passa pelo middleware
-/// global, o `AuthUser` já vem preenchido — aqui é só fetch pelo id.
 async fn me(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<User>, AppError> {
     let user = user_service::get_user_by_id(&state.db, auth.user_id).await?;
     Ok(Json(user))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fallback_display_name, resolve_registration_identity};
+    use crate::middleware::FirebaseClaims;
+    use crate::models::{BlockMode, RegisterRequest};
+
+    fn payload(email: &str, display_name: &str) -> RegisterRequest {
+        RegisterRequest {
+            email: email.into(),
+            display_name: display_name.into(),
+            mode: BlockMode::Personal,
+        }
+    }
+
+    fn claims(email: Option<&str>, name: Option<&str>) -> FirebaseClaims {
+        FirebaseClaims {
+            sub: "firebase-uid".into(),
+            email: email.map(str::to_string),
+            name: name.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn rejects_mismatched_email_between_body_and_claims() {
+        let result = resolve_registration_identity(
+            &claims(Some("firebase@example.com"), Some("Firebase Name")),
+            &payload("body@example.com", "Body Name"),
+        );
+
+        assert!(matches!(result, Err(crate::errors::AppError::BadRequest(_))));
+    }
+
+    #[test]
+    fn prefers_claim_identity_when_available() {
+        let result = resolve_registration_identity(
+            &claims(Some("firebase@example.com"), Some("Firebase Name")),
+            &payload("firebase@example.com", "Body Name"),
+        )
+        .expect("claims should win");
+
+        assert_eq!(result.0, "firebase@example.com");
+        assert_eq!(result.1, "Firebase Name");
+    }
+
+    #[test]
+    fn falls_back_to_body_name_when_claim_name_is_missing() {
+        let result = resolve_registration_identity(
+            &claims(Some("firebase@example.com"), None),
+            &payload("firebase@example.com", "Body Name"),
+        )
+        .expect("body name should be used");
+
+        assert_eq!(result.1, "Body Name");
+    }
+
+    #[test]
+    fn derives_display_name_from_email_when_needed() {
+        let result = resolve_registration_identity(
+            &claims(Some("focus.user@example.com"), None),
+            &payload("focus.user@example.com", ""),
+        )
+        .expect("email fallback should work");
+
+        assert_eq!(result.1, "focus.user");
+        assert_eq!(fallback_display_name("focus.user@example.com"), "focus.user");
+    }
 }

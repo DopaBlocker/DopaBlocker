@@ -5,11 +5,14 @@
 //   1. Registra o plugin de log em debug.
 //   2. Inicializa o SQLCipher local (db::init) e registra a Connection
 //      como state — qualquer comando pega via `State<'_, Connection>`.
-//   3. Cria o Engine de bloqueio em estado parado e registra como state
-//      (dentro de Arc<Mutex<_>> pra permitir o resume assíncrono).
-//   4. Se `blocking_enabled=true` estava persistido, spawna uma task que
-//      reativa o engine com as regras do último user — UX "abriu o app e
-//      continua bloqueando sem ter que clicar de novo".
+//   3. Cria o AdultFilter com o estado persistido e dispara o build em
+//      background (download+populate). O DNS proxy trata `None` como "não
+//      construído ainda" então o boot da janela nunca é bloqueado.
+//   4. Cria o Engine (segurando Arc do AdultFilter) em estado parado e
+//      registra como state (Arc<Mutex<_>> pra permitir o resume assíncrono).
+//   5. Se `blocking_enabled=true` estava persistido, spawna uma task que
+//      restaura DNS órfão do crash anterior (se houver), reativa o engine
+//      e aplica DNS do sistema.
 // =============================================================================
 
 mod blocking;
@@ -21,7 +24,7 @@ use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
-use blocking::engine::Engine;
+use blocking::{adult_filter::AdultFilter, engine::Engine};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -39,12 +42,32 @@ pub fn run() {
             let handle = app.handle().clone();
             let conn = tauri::async_runtime::block_on(async move { db::init(&handle).await })?;
 
-            let engine = Arc::new(Mutex::new(Engine::new()));
+            // Adult filter: carrega o estado persistido do DB (ligado/desligado)
+            // e cria a instância. O Bloom Filter propriamente dito é construído
+            // em background — enquanto isso `contains()` devolve false, então
+            // DNS queries nunca esperam o download.
+            let cache_dir = app
+                .path()
+                .app_cache_dir()
+                .unwrap_or_else(|_| std::env::temp_dir());
+            let persisted_adult_enabled = tauri::async_runtime::block_on(async {
+                db::get_adult_filter_enabled(&conn).await.unwrap_or(false)
+            });
+            let adult_filter = Arc::new(AdultFilter::new(cache_dir, persisted_adult_enabled));
+
+            // Build assíncrono — não bloqueia abertura da janela.
+            let adult_for_build = adult_filter.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = adult_for_build.build_if_needed().await {
+                    tracing::warn!(error = %e, "adult filter: build falhou");
+                }
+            });
+
+            let engine = Arc::new(Mutex::new(Engine::new(adult_filter.clone())));
 
             // Resume do engine em background. Não bloqueia o setup — se falhar
             // (sem admin pra porta 53, por ex.), o usuário vê a UI com estado
-            // correto e pode tentar de novo. Usamos clones pra não prender a
-            // conexão/engine originais aqui.
+            // correto e pode tentar de novo.
             let conn_resume = conn.clone();
             let engine_resume = engine.clone();
             tauri::async_runtime::spawn(async move {
@@ -55,6 +78,7 @@ pub fn run() {
 
             app.manage(conn);
             app.manage(engine);
+            app.manage(adult_filter);
 
             Ok(())
         })
@@ -76,6 +100,15 @@ async fn resume_engine_if_enabled(
     conn: &tokio_rusqlite::Connection,
     engine: &Mutex<Engine>,
 ) -> anyhow::Result<()> {
+    // Sempre restauramos qualquer snapshot de DNS pendente antes de mais nada.
+    // Cenário: app crashou com bloqueio ativo → DNS do sistema ainda está
+    // apontando pro proxy que morreu → o OS fica sem resolver. Aqui,
+    // colocamos DNS de volta no que era, limpamos a snapshot, e só depois
+    // decidimos se reativamos o engine (que fará uma captura fresca).
+    if let Err(e) = blocking::system_dns::restore_if_any(conn).await {
+        tracing::warn!(error = %e, "falha ao restaurar DNS órfão no boot");
+    }
+
     if !db::get_blocking_enabled(conn).await? {
         return Ok(());
     }
@@ -84,13 +117,25 @@ async fn resume_engine_if_enabled(
         return Ok(());
     };
     let rules = db::list_active_domains(conn, user_id.clone()).await?;
-    let mut eng = engine.lock().await;
-    if eng.is_running() {
-        return Ok(());
+
+    {
+        let mut eng = engine.lock().await;
+        if eng.is_running() {
+            return Ok(());
+        }
+        eng.start(rules).await.map_err(|e| anyhow::anyhow!("{e}"))?;
     }
-    eng.start(rules)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Engine de pé — agora captura o DNS atual (já restaurado acima, então
+    // é o "de verdade") e aponta pro proxy. Se falhar, desliga tudo pra não
+    // deixar bloqueio meio-ativo.
+    if let Err(e) = blocking::system_dns::apply_and_remember(conn).await {
+        tracing::warn!(error = %e, "falha ao reaplicar DNS no resume — revertendo");
+        let mut eng = engine.lock().await;
+        eng.stop().await;
+        return Err(e);
+    }
+
     tracing::info!(%user_id, "engine reativado no boot");
     Ok(())
 }

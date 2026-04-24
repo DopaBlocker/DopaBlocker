@@ -93,24 +93,24 @@ select {
    o HTML enxuto e o visual consistente entre telas. Mudar aqui → mudar em
    todo lugar.
    ========================================================================== */
+/* Tailwind 4 não aceita `@apply` cascateando uma custom class dentro de outra
+   (`.btn-primary { @apply btn ... }` falha em runtime). Então cada variante
+   expande o conjunto inteiro de utilities. Repetição intencional — mudança
+   visual segue em um único arquivo. */
 @layer components {
     /* Buttons ----------------------------------------------------------------- */
-    .btn {
-        @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-colors;
-        @apply disabled:cursor-not-allowed disabled:opacity-50;
-    }
     .btn-primary {
-        @apply btn bg-primary text-white hover:bg-primary-hover;
+        @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-colors bg-primary text-white hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50;
         box-shadow: var(--shadow-soft);
     }
     .btn-secondary {
-        @apply btn bg-surface-2 text-text hover:bg-surface-hover border border-border;
+        @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-colors bg-surface-2 text-text hover:bg-surface-hover border border-border disabled:cursor-not-allowed disabled:opacity-50;
     }
     .btn-ghost {
-        @apply btn text-text-muted hover:text-text hover:bg-surface-2;
+        @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-colors text-text-muted hover:text-text hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50;
     }
     .btn-danger {
-        @apply btn bg-danger text-white hover:opacity-90;
+        @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-colors bg-danger text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50;
     }
     .btn-icon {
         @apply inline-flex items-center justify-center rounded-md p-1.5 text-text-muted hover:text-text hover:bg-surface-2 transition-colors;
@@ -122,7 +122,8 @@ select {
         box-shadow: var(--shadow-card);
     }
     .card-padded {
-        @apply card p-5;
+        @apply rounded-lg border border-border bg-surface p-5;
+        box-shadow: var(--shadow-card);
     }
 
     /* Inputs ------------------------------------------------------------------ */
@@ -130,32 +131,27 @@ select {
         @apply text-[11px] font-medium uppercase tracking-wider text-text-muted;
     }
     .input {
-        @apply w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text;
-        @apply placeholder:text-text-dim focus:border-primary focus:outline-none;
-        @apply transition-colors;
+        @apply w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text placeholder:text-text-dim focus:border-primary focus:outline-none transition-colors;
     }
 
     /* Badges ------------------------------------------------------------------ */
-    .badge {
-        @apply inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium;
-    }
     .badge-neutral {
-        @apply badge border-border text-text-muted;
+        @apply inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap border-border text-text-muted;
     }
     .badge-primary {
-        @apply badge border-primary/40 text-primary;
+        @apply inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap border-primary/40 text-primary;
         background: var(--color-primary-subtle);
     }
     .badge-secondary {
-        @apply badge border-secondary/40 text-secondary;
+        @apply inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap border-secondary/40 text-secondary;
         background: var(--color-secondary-subtle);
     }
     .badge-success {
-        @apply badge border-success/40 text-success;
+        @apply inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap border-success/40 text-success;
         background: var(--color-success-subtle);
     }
     .badge-danger {
-        @apply badge border-danger/40 text-danger;
+        @apply inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap border-danger/40 text-danger;
         background: var(--color-danger-subtle);
     }
 }

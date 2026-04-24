@@ -78,6 +78,7 @@ pub struct AuthUser {
 // Este endpoint retorna um JSON `{ "kid1": "PEM...", "kid2": "PEM..." }`:
 const JWKS_URL: &str =
     "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com";
+const JWKS_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Tempo de vida do cache. O Google rotaciona chaves a cada ~24h, mas o
 // header `Cache-Control` da resposta é mais curto. 6h é um meio-termo
@@ -122,7 +123,7 @@ impl JwksCache {
         }
 
         // Cache frio, expirado ou sem o kid → vai buscar.
-        let fresh = fetch_jwks().await?;
+        let fresh = fetch_jwks_timed().await?;
         let key = fresh
             .get(kid)
             .cloned()
@@ -140,6 +141,7 @@ impl JwksCache {
 
 /// Baixa e parseia o JWKS do Google. Cada PEM é convertido em `DecodingKey`
 /// reutilizável para a validação de assinatura.
+#[allow(dead_code)]
 async fn fetch_jwks() -> Result<HashMap<String, DecodingKey>, AppError> {
     let resp: HashMap<String, String> = reqwest::get(JWKS_URL)
         .await
@@ -152,6 +154,32 @@ async fn fetch_jwks() -> Result<HashMap<String, DecodingKey>, AppError> {
     for (kid, pem) in resp {
         let key = DecodingKey::from_rsa_pem(pem.as_bytes())
             .map_err(|e| AppError::InternalServerError(format!("PEM inválido: {e}")))?;
+        out.insert(kid, key);
+    }
+    Ok(out)
+}
+
+async fn fetch_jwks_timed() -> Result<HashMap<String, DecodingKey>, AppError> {
+    let client = reqwest::Client::builder()
+        .timeout(JWKS_FETCH_TIMEOUT)
+        .build()
+        .map_err(|e| {
+            AppError::InternalServerError(format!("Falha ao criar client JWKS: {e}"))
+        })?;
+
+    let resp: HashMap<String, String> = client
+        .get(JWKS_URL)
+        .send()
+        .await
+        .map_err(|e| AppError::InternalServerError(format!("Falha ao buscar JWKS: {e}")))?
+        .json()
+        .await
+        .map_err(|e| AppError::InternalServerError(format!("JWKS invÃ¡lido: {e}")))?;
+
+    let mut out = HashMap::new();
+    for (kid, pem) in resp {
+        let key = DecodingKey::from_rsa_pem(pem.as_bytes())
+            .map_err(|e| AppError::InternalServerError(format!("PEM invÃ¡lido: {e}")))?;
         out.insert(kid, key);
     }
     Ok(out)

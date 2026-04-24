@@ -14,6 +14,7 @@ import type {
 } from '../types';
 
 const BASE_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+const REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_API_TIMEOUT_MS ?? 12000);
 
 export class ApiError extends Error {
     constructor(
@@ -33,14 +34,30 @@ async function request<T>(
 ): Promise<T> {
     const token = await getIdToken();
     const headers: Record<string, string> = {};
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    const res = await fetch(`${BASE_URL}${path}`, {
-        method,
-        headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    let res: Response;
+    try {
+        res = await fetch(`${BASE_URL}${path}`, {
+            method,
+            headers,
+            body: body !== undefined ? JSON.stringify(body) : undefined,
+            signal: controller.signal,
+        });
+    } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+            throw new ApiError(
+                0,
+                'O backend demorou demais para responder. Verifique se a API local estah rodando.',
+            );
+        }
+        throw err;
+    } finally {
+        window.clearTimeout(timeoutId);
+    }
 
     if (res.status === 401 && !retriedOnce && token) {
         await getIdToken(true);
