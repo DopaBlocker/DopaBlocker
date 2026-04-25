@@ -25,26 +25,11 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::models::{BlockMode, User};
+use crate::services::util::{block_mode_to_sql, parse_block_mode};
 
-// Conversão enum ↔ string para persistência. Usar números (0/1) seria mais
-// compacto mas quebraria inspeção manual via sqlite3 CLI e exigiria
-// migration se adicionássemos um terceiro modo no futuro.
-fn block_mode_to_str(mode: &BlockMode) -> &'static str {
-    match mode {
-        BlockMode::Personal => "personal",
-        BlockMode::Parental => "parental",
-    }
-}
-
-// Qualquer valor inesperado vira `Personal` (mais seguro — o modo menos
-// privilegiado). Dado que o backend é o único escritor, isso só acontece
-// se alguém mexer no .db manualmente.
-fn str_to_block_mode(s: &str) -> BlockMode {
-    match s {
-        "parental" => BlockMode::Parental,
-        _ => BlockMode::Personal,
-    }
-}
+// Conversões enum ↔ string vivem em `services/util.rs` (block_mode_to_sql /
+// parse_block_mode) — antes desta refatoração estavam duplicadas em quatro
+// services diferentes.
 
 /// INSERT + SELECT: primeiro insere, depois lê de volta para garantir que
 /// os defaults do banco (como `created_at DEFAULT CURRENT_TIMESTAMP`)
@@ -58,7 +43,7 @@ pub async fn create_user(
     mode: BlockMode,
 ) -> Result<User, AppError> {
     let id = Uuid::new_v4().to_string();
-    let mode_str = block_mode_to_str(&mode).to_string();
+    let mode_str = block_mode_to_sql(&mode).to_string();
 
     // Clones porque o closure precisa ser `move` e `'static` — o original
     // pode ser reutilizado depois do `.await` (ex: no get_user_by_firebase_uid).
@@ -110,7 +95,7 @@ pub async fn get_user_by_firebase_uid(
                         firebase_uid: row.get(1)?,
                         email: row.get(2)?,
                         display_name: row.get(3)?,
-                        mode: str_to_block_mode(&row.get::<_, String>(4)?),
+                        mode: parse_block_mode(&row.get::<_, String>(4)?),
                         created_at: row.get(5)?,
                     })
                 },
@@ -140,7 +125,7 @@ pub async fn get_user_by_id(db: &Connection, user_id: String) -> Result<User, Ap
                         firebase_uid: row.get(1)?,
                         email: row.get(2)?,
                         display_name: row.get(3)?,
-                        mode: str_to_block_mode(&row.get::<_, String>(4)?),
+                        mode: parse_block_mode(&row.get::<_, String>(4)?),
                         created_at: row.get(5)?,
                     })
                 },

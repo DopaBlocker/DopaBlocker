@@ -15,10 +15,16 @@
 //   - user_service      → CRUD de User.
 //   - blocklist_service → items bloqueados + filtro adulto.
 //   - device_service    → devices + fluxo completo de vinculação parental.
-//   - auth_service      → placeholder; autenticação real vive no middleware.
+//   - auth_service      → fluxo de verificação de email (start/verify/consume)
+//                         + envio SMTP. A validação de Firebase JWT em si vive
+//                         em `middleware.rs`; aqui mora apenas a verificação
+//                         por código que precede o `POST /auth/register`.
+//   - util              → helpers compartilhados (ServiceError tipado, ISO-8601,
+//                         conversões enum ↔ texto SQLite).
 // =============================================================================
 
 pub mod auth_service;
 pub mod blocklist_service;
 pub mod device_service;
 pub mod user_service;
+pub mod util;

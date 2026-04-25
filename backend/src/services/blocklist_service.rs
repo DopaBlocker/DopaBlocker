@@ -30,24 +30,10 @@ use dopablocker_shared::domain_matcher::normalize_domain;
 
 use crate::errors::AppError;
 use crate::models::{AdultFilterSettings, BlockedItem, BlockedType, CreateBlockedItemRequest};
+use crate::services::util::{blocked_type_to_sql, iso_now, parse_blocked_type};
 
-// Persistência como texto — mesma justificativa de `block_mode_to_str` em
-// user_service: legibilidade via sqlite3 CLI.
-fn item_type_to_str(t: &BlockedType) -> &'static str {
-    match t {
-        BlockedType::Domain => "domain",
-        BlockedType::App => "app",
-        BlockedType::Keyword => "keyword",
-    }
-}
-
-fn str_to_item_type(s: &str) -> BlockedType {
-    match s {
-        "app" => BlockedType::App,
-        "keyword" => BlockedType::Keyword,
-        _ => BlockedType::Domain,
-    }
-}
+// Conversões enum ↔ string e helpers de timestamp ISO-8601 vivem em
+// `services/util.rs` (compartilhados com os outros services).
 
 /// Adiciona item à blocklist. Normaliza (trim + lowercase), valida não-vazio,
 /// insere, traduz o erro de UNIQUE para 409.
@@ -63,7 +49,7 @@ pub async fn add_item(
     payload: CreateBlockedItemRequest,
 ) -> Result<BlockedItem, AppError> {
     let id = Uuid::new_v4().to_string();
-    let item_type = item_type_to_str(&payload.item_type).to_string();
+    let item_type = blocked_type_to_sql(&payload.item_type).to_string();
 
     // Normalização dependente do tipo. Domínios passam pela mesma função que
     // o DNS proxy usa na hora de casar a query — `http://www.X.com/path`,
@@ -119,7 +105,7 @@ pub async fn add_item(
         item_type: payload.item_type,
         value,
         is_active: true,
-        created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        created_at: iso_now(),
     })
 }
 
@@ -136,7 +122,7 @@ pub async fn list_items(db: &Connection, user_id: String) -> Result<Vec<BlockedI
                 Ok(BlockedItem {
                     id: row.get(0)?,
                     user_id: row.get(1)?,
-                    item_type: str_to_item_type(&row.get::<_, String>(2)?),
+                    item_type: parse_blocked_type(&row.get::<_, String>(2)?),
                     value: row.get(3)?,
                     // SQLite não tem bool nativo — é INTEGER 0/1.
                     is_active: row.get::<_, i64>(4)? != 0,

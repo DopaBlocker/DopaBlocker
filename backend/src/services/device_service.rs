@@ -24,7 +24,6 @@
 // não há como recuperar — perdeu, refaz o fluxo.
 // =============================================================================
 
-use chrono::Utc;
 use rand::Rng;
 use rusqlite::{params, OptionalExtension};
 use tokio_rusqlite::Connection;
@@ -33,8 +32,11 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::middleware::hash_device_token;
 use crate::models::{
-    ConfirmLinkRequest, ConfirmLinkResponse, Device, GenerateLinkCodeResponse, Platform,
+    ConfirmLinkRequest, ConfirmLinkResponse, Device, GenerateLinkCodeResponse,
     RegisterDeviceRequest,
+};
+use crate::services::util::{
+    iso_after, iso_now, map_sqlite_error, parse_platform, platform_to_sql, ServiceError,
 };
 
 /// TTL do código de vinculação em segundos. 5 min é o meio-termo:
@@ -42,20 +44,6 @@ use crate::models::{
 /// curto o bastante para limitar brute-force (100k códigos / 5min =
 /// alguém teria que chutar 333 códigos/s para cobrir todo o espaço).
 const LINK_CODE_TTL_SECS: i64 = 5 * 60;
-
-fn platform_to_str(p: &Platform) -> &'static str {
-    match p {
-        Platform::Windows => "windows",
-        Platform::Android => "android",
-    }
-}
-
-fn str_to_platform(s: &str) -> Platform {
-    match s {
-        "android" => Platform::Android,
-        _ => Platform::Windows,
-    }
-}
 
 /// Registra device do PAI. O `is_child` é hard-coded como 0 aqui — um device
 /// filho SÓ nasce via `confirm_link`. Isso elimina a classe inteira de bugs
@@ -66,7 +54,7 @@ pub async fn register_device(
     payload: RegisterDeviceRequest,
 ) -> Result<Device, AppError> {
     let id = Uuid::new_v4().to_string();
-    let platform_str = platform_to_str(&payload.platform).to_string();
+    let platform_str = platform_to_sql(&payload.platform).to_string();
     let id_c = id.clone();
     let user_id_c = user_id.clone();
     let device_name_c = payload.device_name.clone();
@@ -89,7 +77,7 @@ pub async fn register_device(
         device_name: payload.device_name,
         platform: payload.platform,
         is_child: false,
-        created_at: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        created_at: iso_now(),
     })
 }
 
@@ -109,7 +97,7 @@ pub async fn list_devices(db: &Connection, user_id: String) -> Result<Vec<Device
                     id: row.get(0)?,
                     user_id: row.get(1)?,
                     device_name: row.get(2)?,
-                    platform: str_to_platform(&row.get::<_, String>(3)?),
+                    platform: parse_platform(&row.get::<_, String>(3)?),
                     is_child: row.get::<_, i64>(4)? != 0,
                     created_at: row.get(5)?,
                 })
@@ -166,9 +154,7 @@ pub async fn generate_link_code(
         let mut rng = rand::thread_rng();
         format!("{:06}", rng.gen_range(0..1_000_000))
     };
-    let expires_at = (Utc::now() + chrono::Duration::seconds(LINK_CODE_TTL_SECS))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    let expires_at = iso_after(LINK_CODE_TTL_SECS);
 
     let id = Uuid::new_v4().to_string();
     let code_c = code.clone();
@@ -214,8 +200,8 @@ pub async fn confirm_link(
 ) -> Result<ConfirmLinkResponse, AppError> {
     let code = payload.code;
     let device_name = payload.device_name;
-    let platform_str = platform_to_str(&payload.platform).to_string();
-    let now_iso = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let platform_str = platform_to_sql(&payload.platform).to_string();
+    let now_iso = iso_now();
 
     let plain_token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let token_hash = hash_device_token(&plain_token);
@@ -248,26 +234,14 @@ pub async fn confirm_link(
                     )
                     .optional()?;
 
-                let (link_id, parent_device_id, expires_at) = match link {
-                    Some(v) => v,
-                    None => {
-                        return Err(tokio_rusqlite::Error::Other(Box::<
-                            dyn std::error::Error + Send + Sync,
-                        >::from(
-                            "LINK_NOT_FOUND"
-                        )));
-                    }
-                };
+                let (link_id, parent_device_id, expires_at) = link
+                    .ok_or_else(|| ServiceError::LinkNotFound.into_sqlite())?;
 
                 // Comparação lexicográfica de strings ISO-8601 UTC funciona
                 // como comparação cronológica — propriedade garantida pelo
                 // formato fixed-width com zero-padding (ano, mês, dia…).
                 if expires_at.as_str() < now_iso.as_str() {
-                    return Err(tokio_rusqlite::Error::Other(Box::<
-                        dyn std::error::Error + Send + Sync,
-                    >::from(
-                        "LINK_EXPIRED"
-                    )));
+                    return Err(ServiceError::LinkExpired.into_sqlite());
                 }
 
                 // Precisamos do user_id do pai para amarrar o device filho
@@ -312,17 +286,8 @@ pub async fn confirm_link(
         })
         .await;
 
-    // Tradução dos sentinelas para HTTP errors claros.
-    let (child_device_id, parent_user_id, parent_device_id) = result.map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("LINK_NOT_FOUND") {
-            AppError::BadRequest("Código inválido ou já utilizado".into())
-        } else if msg.contains("LINK_EXPIRED") {
-            AppError::BadRequest("Código expirado".into())
-        } else {
-            AppError::InternalServerError(msg)
-        }
-    })?;
+    // Tradução dos sentinelas para HTTP errors claros (via ServiceError tipado).
+    let (child_device_id, parent_user_id, parent_device_id) = result.map_err(map_sqlite_error)?;
 
     Ok(ConfirmLinkResponse {
         // Prefixo "dt_" é o que o middleware usa para rotear: sem ele,

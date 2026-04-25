@@ -139,26 +139,8 @@ impl JwksCache {
     }
 }
 
-/// Baixa e parseia o JWKS do Google. Cada PEM é convertido em `DecodingKey`
-/// reutilizável para a validação de assinatura.
-#[allow(dead_code)]
-async fn fetch_jwks() -> Result<HashMap<String, DecodingKey>, AppError> {
-    let resp: HashMap<String, String> = reqwest::get(JWKS_URL)
-        .await
-        .map_err(|e| AppError::InternalServerError(format!("Falha ao buscar JWKS: {e}")))?
-        .json()
-        .await
-        .map_err(|e| AppError::InternalServerError(format!("JWKS inválido: {e}")))?;
-
-    let mut out = HashMap::new();
-    for (kid, pem) in resp {
-        let key = DecodingKey::from_rsa_pem(pem.as_bytes())
-            .map_err(|e| AppError::InternalServerError(format!("PEM inválido: {e}")))?;
-        out.insert(kid, key);
-    }
-    Ok(out)
-}
-
+/// Baixa e parseia o JWKS do Google com timeout. Cada PEM é convertido em
+/// `DecodingKey` reutilizável para a validação de assinatura.
 async fn fetch_jwks_timed() -> Result<HashMap<String, DecodingKey>, AppError> {
     let client = reqwest::Client::builder()
         .timeout(JWKS_FETCH_TIMEOUT)
@@ -172,12 +154,12 @@ async fn fetch_jwks_timed() -> Result<HashMap<String, DecodingKey>, AppError> {
         .map_err(|e| AppError::InternalServerError(format!("Falha ao buscar JWKS: {e}")))?
         .json()
         .await
-        .map_err(|e| AppError::InternalServerError(format!("JWKS invÃ¡lido: {e}")))?;
+        .map_err(|e| AppError::InternalServerError(format!("JWKS inválido: {e}")))?;
 
     let mut out = HashMap::new();
     for (kid, pem) in resp {
         let key = DecodingKey::from_rsa_pem(pem.as_bytes())
-            .map_err(|e| AppError::InternalServerError(format!("PEM invÃ¡lido: {e}")))?;
+            .map_err(|e| AppError::InternalServerError(format!("PEM inválido: {e}")))?;
         out.insert(kid, key);
     }
     Ok(out)

@@ -1,16 +1,22 @@
-use chrono::{Duration as ChronoDuration, Utc};
+use hmac::{Hmac, Mac};
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use rand::{Rng, RngCore};
 use rusqlite::{params, OptionalExtension};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use tokio_rusqlite::Connection;
 use uuid::Uuid;
+
+type HmacSha256 = Hmac<Sha256>;
 
 use crate::config::{AppConfig, EmailDeliveryMode, SmtpConfig};
 use crate::errors::AppError;
 use crate::models::{BlockMode, EmailCodeStartResponse, EmailCodeVerifyResponse, User};
+use crate::services::util::{
+    block_mode_to_sql, iso_after, iso_before, iso_now, map_sqlite_error, parse_block_mode,
+    ServiceError,
+};
 
 const CODE_TTL_SECS: i64 = 10 * 60;
 const TOKEN_TTL_SECS: i64 = 15 * 60;
@@ -78,112 +84,38 @@ pub fn email_token_hash(secret: &str, token: &str) -> String {
 }
 
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
-    let a = a.as_bytes();
-    let b = b.as_bytes();
-    let max_len = a.len().max(b.len());
-    let mut diff = a.len() ^ b.len();
-
-    for i in 0..max_len {
-        let left = a.get(i).copied().unwrap_or(0);
-        let right = b.get(i).copied().unwrap_or(0);
-        diff |= (left ^ right) as usize;
+    use subtle::ConstantTimeEq;
+    // `subtle` exige slices de mesmo tamanho — strings com tamanhos
+    // diferentes nunca podem ser iguais, e essa checagem é segura mesmo
+    // sob otimização agressiva do compilador.
+    if a.len() != b.len() {
+        return false;
     }
-
-    diff == 0
+    a.as_bytes().ct_eq(b.as_bytes()).into()
 }
 
 fn hmac_sha256_hex(secret: &str, message: &str) -> String {
-    const BLOCK_SIZE: usize = 64;
-
-    let mut key = secret.as_bytes().to_vec();
-    if key.len() > BLOCK_SIZE {
-        key = Sha256::digest(&key).to_vec();
-    }
-    key.resize(BLOCK_SIZE, 0);
-
-    let mut ipad = [0x36u8; BLOCK_SIZE];
-    let mut opad = [0x5cu8; BLOCK_SIZE];
-    for (idx, byte) in key.iter().enumerate() {
-        ipad[idx] ^= byte;
-        opad[idx] ^= byte;
-    }
-
-    let mut inner = Sha256::new();
-    inner.update(ipad);
-    inner.update(message.as_bytes());
-    let inner_hash = inner.finalize();
-
-    let mut outer = Sha256::new();
-    outer.update(opad);
-    outer.update(inner_hash);
-    hex_encode(&outer.finalize())
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .expect("HMAC aceita chaves de qualquer tamanho");
+    mac.update(message.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
 }
 
 fn generate_verification_token() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
-    hex_encode(&bytes)
+    hex::encode(bytes)
 }
 
-fn iso_now() -> String {
-    Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
-}
-
-fn iso_after(seconds: i64) -> String {
-    (Utc::now() + ChronoDuration::seconds(seconds))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string()
-}
-
-fn iso_before(seconds: i64) -> String {
-    (Utc::now() - ChronoDuration::seconds(seconds))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string()
-}
-
-fn sentinel(name: &'static str) -> tokio_rusqlite::Error {
-    tokio_rusqlite::Error::Other(Box::<dyn std::error::Error + Send + Sync>::from(name))
-}
-
-fn map_start_error(err: tokio_rusqlite::Error) -> AppError {
+/// Especialização do `map_sqlite_error` para `create_user_with_email_verification`:
+/// erros de UNIQUE constraint (firebase_uid duplicado) viram 409 Conflict, e os
+/// demais (ServiceError tipado ou SQL puro) seguem o mapeamento padrão.
+fn map_register_error(err: tokio_rusqlite::Error) -> AppError {
     let msg = err.to_string();
-    if msg.contains("EMAIL_CODE_COOLDOWN") {
-        AppError::BadRequest("Aguarde antes de pedir um novo codigo".into())
-    } else if msg.contains("EMAIL_CODE_RATE_LIMITED") {
-        AppError::BadRequest("Limite de codigos por hora atingido".into())
-    } else {
-        AppError::InternalServerError(msg)
-    }
-}
-
-fn map_verify_error(err: tokio_rusqlite::Error) -> AppError {
-    let msg = err.to_string();
-    if msg.contains("EMAIL_CODE_NOT_FOUND") {
-        AppError::BadRequest("Codigo invalido ou expirado".into())
-    } else if msg.contains("EMAIL_CODE_EXPIRED") {
-        AppError::BadRequest("Codigo expirado".into())
-    } else if msg.contains("EMAIL_CODE_TOO_MANY_ATTEMPTS") {
-        AppError::BadRequest("Muitas tentativas. Peca um novo codigo".into())
-    } else if msg.contains("EMAIL_CODE_INVALID") {
-        AppError::BadRequest("Codigo invalido".into())
-    } else if msg.contains("EMAIL_TOKEN_INVALID") {
-        AppError::BadRequest("Verificacao de email ausente ou invalida".into())
-    } else if msg.contains("EMAIL_TOKEN_EXPIRED") {
-        AppError::BadRequest("Verificacao de email expirada".into())
-    } else if msg.contains("UNIQUE") {
+    if ServiceError::from_message(&msg).is_none() && msg.contains("UNIQUE") {
         AppError::Conflict(format!("Falha ao criar usuario: {msg}"))
     } else {
-        AppError::InternalServerError(msg)
+        map_sqlite_error(err)
     }
 }
 
@@ -223,7 +155,7 @@ pub async fn start_email_verification(
                 .as_deref()
                 .is_some_and(|sent_at| sent_at > cooldown_cutoff.as_str())
             {
-                return Err(sentinel("EMAIL_CODE_COOLDOWN"));
+                return Err(ServiceError::EmailCodeCooldown.into_sqlite());
             }
 
             let recent_sends: i64 = c.query_row(
@@ -234,7 +166,7 @@ pub async fn start_email_verification(
             )?;
 
             if recent_sends >= MAX_SENDS_PER_HOUR {
-                return Err(sentinel("EMAIL_CODE_RATE_LIMITED"));
+                return Err(ServiceError::EmailCodeRateLimited.into_sqlite());
             }
 
             c.execute(
@@ -258,7 +190,7 @@ pub async fn start_email_verification(
         }
     })
     .await
-    .map_err(map_start_error)?;
+    .map_err(map_sqlite_error)?;
 
     if let Some(smtp) = smtp {
         if let Err(err) = send_verification_email(smtp, email.clone(), code).await {
@@ -322,18 +254,18 @@ pub async fn verify_email_code(
                 .optional()?;
 
             let (id, stored_hash, attempts, expires_at) =
-                record.ok_or_else(|| sentinel("EMAIL_CODE_NOT_FOUND"))?;
+                record.ok_or_else(|| ServiceError::EmailCodeNotFound.into_sqlite())?;
 
             if expires_at.as_str() < now.as_str() {
                 c.execute(
                     "UPDATE email_verifications SET status = 'expired' WHERE id = ?1",
                     params![id],
                 )?;
-                return Err(sentinel("EMAIL_CODE_EXPIRED"));
+                return Err(ServiceError::EmailCodeExpired.into_sqlite());
             }
 
             if attempts >= MAX_ATTEMPTS {
-                return Err(sentinel("EMAIL_CODE_TOO_MANY_ATTEMPTS"));
+                return Err(ServiceError::EmailCodeTooManyAttempts.into_sqlite());
             }
 
             if !constant_time_eq(&stored_hash, &submitted_hash) {
@@ -343,7 +275,7 @@ pub async fn verify_email_code(
                      WHERE id = ?1",
                     params![id],
                 )?;
-                return Err(sentinel("EMAIL_CODE_INVALID"));
+                return Err(ServiceError::EmailCodeInvalid.into_sqlite());
             }
 
             c.execute(
@@ -360,7 +292,7 @@ pub async fn verify_email_code(
         }
     })
     .await
-    .map_err(map_verify_error)?;
+    .map_err(map_sqlite_error)?;
 
     Ok(EmailCodeVerifyResponse {
         email_verification_token: token,
@@ -387,7 +319,7 @@ pub async fn create_user_with_email_verification(
     let token_hash = email_token_hash(&config.email_code_secret, token);
     let id = Uuid::new_v4().to_string();
     let now = iso_now();
-    let mode_str = block_mode_to_str(&mode).to_string();
+    let mode_str = block_mode_to_sql(&mode).to_string();
     let email = email.trim().to_string();
     let display_name = display_name.trim().to_string();
 
@@ -409,7 +341,7 @@ pub async fn create_user_with_email_verification(
             .optional()?;
 
         let (verification_id, token_expires_at) =
-            verification.ok_or_else(|| sentinel("EMAIL_TOKEN_INVALID"))?;
+            verification.ok_or_else(|| ServiceError::EmailTokenInvalid.into_sqlite())?;
 
         if token_expires_at.as_str() < now.as_str() {
             tx.execute(
@@ -418,7 +350,7 @@ pub async fn create_user_with_email_verification(
                  WHERE id = ?1",
                 params![verification_id],
             )?;
-            return Err(sentinel("EMAIL_TOKEN_EXPIRED"));
+            return Err(ServiceError::EmailTokenExpired.into_sqlite());
         }
 
         tx.execute(
@@ -444,7 +376,7 @@ pub async fn create_user_with_email_verification(
                     firebase_uid: row.get(1)?,
                     email: row.get(2)?,
                     display_name: row.get(3)?,
-                    mode: str_to_block_mode(&row.get::<_, String>(4)?),
+                    mode: parse_block_mode(&row.get::<_, String>(4)?),
                     created_at: row.get(5)?,
                 })
             },
@@ -455,7 +387,7 @@ pub async fn create_user_with_email_verification(
         Ok(user)
     })
     .await
-    .map_err(map_verify_error)
+    .map_err(map_register_error)
 }
 
 async fn expire_email_verification(db: &Connection, id: String) {
@@ -517,20 +449,6 @@ fn send_verification_email_blocking(
         .map_err(|e| AppError::ServiceUnavailable(format!("Falha ao enviar email: {e}")))?;
 
     Ok(())
-}
-
-fn block_mode_to_str(mode: &BlockMode) -> &'static str {
-    match mode {
-        BlockMode::Personal => "personal",
-        BlockMode::Parental => "parental",
-    }
-}
-
-fn str_to_block_mode(s: &str) -> BlockMode {
-    match s {
-        "parental" => BlockMode::Parental,
-        _ => BlockMode::Personal,
-    }
 }
 
 #[cfg(test)]
