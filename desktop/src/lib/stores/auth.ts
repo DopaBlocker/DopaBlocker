@@ -3,6 +3,12 @@ import { writable } from 'svelte/store';
 
 import { ApiError, api } from '../services/api';
 import {
+    anonymousAuthProvider,
+    childAuthProvider,
+    firebaseAuthProvider,
+    setAuthProvider,
+} from '../services/auth-provider';
+import {
     currentFirebaseUser,
     getIdToken,
     onAuthChange,
@@ -11,7 +17,12 @@ import {
     signOutCurrent,
     signUpEmail,
 } from '../services/firebase';
-import type { BlockMode, User } from '../types';
+import {
+    clearChildSession as clearChildSessionDb,
+    loadChildSession as loadChildSessionDb,
+    saveChildSession as saveChildSessionDb,
+} from '../services/tauri-bridge';
+import type { BlockMode, ChildSession, ConfirmLinkRequest, User } from '../types';
 
 export type AuthPhase =
     | 'booting'
@@ -19,7 +30,8 @@ export type AuthPhase =
     | 'authenticating'
     | 'pending_local_registration'
     | 'backend_unavailable'
-    | 'authenticated';
+    | 'authenticated'
+    | 'child_session';
 
 export interface FirebaseIdentity {
     uid: string;
@@ -32,6 +44,9 @@ export interface AuthState {
     phase: AuthPhase;
     user: User | null;
     firebase_user: FirebaseIdentity | null;
+    /** Preenchido apenas quando phase === 'child_session' — sessao de filho
+     * sem conta Firebase. Contém o `dt_<token>` (já com prefixo). */
+    child: ChildSession | null;
     loading: boolean;
     error: string | null;
 }
@@ -40,6 +55,7 @@ export const AUTH_BOOTING_STATE: AuthState = {
     phase: 'booting',
     user: null,
     firebase_user: null,
+    child: null,
     loading: true,
     error: null,
 };
@@ -66,16 +82,42 @@ function createAuthStore() {
     let pendingAction: PendingAction | null = null;
     let nextSignedOutError: string | null = null;
 
-    function commit(next: Omit<AuthState, 'loading'> & { loading?: boolean }) {
+    function commit(
+        next: Omit<AuthState, 'loading' | 'child'> & {
+            loading?: boolean;
+            child?: ChildSession | null;
+        },
+    ) {
+        const child = next.child ?? null;
         snapshot = {
             phase: next.phase,
             user: next.user,
             firebase_user: next.firebase_user,
+            child,
             error: next.error,
             loading: next.loading ?? isLoadingPhase(next.phase),
         };
+        // Mantém o AuthProvider corrente sincronizado com a fase. Qualquer
+        // request via api.ts vai usar o provider que escolhemos aqui.
+        syncAuthProvider(snapshot);
         set(snapshot);
         settlePendingAction(snapshot);
+    }
+
+    function syncAuthProvider(state: AuthState) {
+        if (state.phase === 'child_session' && state.child) {
+            setAuthProvider(childAuthProvider(state.child.device_token));
+        } else if (
+            state.phase === 'authenticated' ||
+            state.phase === 'authenticating' ||
+            state.phase === 'pending_local_registration' ||
+            state.phase === 'backend_unavailable'
+        ) {
+            setAuthProvider(firebaseAuthProvider);
+        } else {
+            // booting, signed_out → sem credencial.
+            setAuthProvider(anonymousAuthProvider);
+        }
     }
 
     function beginPendingAction(resolveOn: Set<AuthPhase>, rejectOn: Set<AuthPhase>) {
@@ -106,9 +148,71 @@ function createAuthStore() {
         if (initialized) return;
         initialized = true;
 
+        // Antes de escutar Firebase, tenta restaurar sessao de filho do
+        // SQLCipher. Se existir e for valida, fica em `child_session`;
+        // qualquer evento Firebase posterior (que nao deveria acontecer
+        // porque o filho nao loga no Firebase) e ignorado pelo
+        // `authSyncVersion`.
+        void hydrateFromChildSession();
+
         onAuthChange((fbUser) => {
+            // Filho nao toca Firebase — se ja restauramos child_session,
+            // ignoramos eventos do Firebase SDK.
+            if (snapshot.phase === 'child_session') return;
             void hydrateFromFirebase(fbUser);
         });
+    }
+
+    async function hydrateFromChildSession() {
+        try {
+            const session = await loadChildSessionDb();
+            if (!session) return;
+
+            // Coloca o provider antes da primeira request — a chamada de
+            // validacao precisa do header `dt_<token>`.
+            setAuthProvider(childAuthProvider(session.device_token));
+            const syncVersion = ++authSyncVersion;
+
+            try {
+                // Validar que o token ainda funciona. `/blocklist` é read-only
+                // e aceita Device Token, então é o smoke test mais barato.
+                await api.listBlocklist();
+                if (syncVersion !== authSyncVersion) return;
+
+                commit({
+                    phase: 'child_session',
+                    user: null,
+                    firebase_user: null,
+                    child: session,
+                    error: null,
+                });
+            } catch (err) {
+                if (syncVersion !== authSyncVersion) return;
+
+                if (isUnauthorized(err)) {
+                    // Pai revogou — limpa storage e cai em signed_out.
+                    await clearChildSessionDb().catch(() => undefined);
+                    commit({
+                        phase: 'signed_out',
+                        user: null,
+                        firebase_user: null,
+                        error: 'Este dispositivo foi desvinculado. Peça um novo código ao responsável.',
+                    });
+                } else {
+                    // Backend offline — mantem child_session, UI mostra erro
+                    // e proxima request tentara de novo.
+                    commit({
+                        phase: 'child_session',
+                        user: null,
+                        firebase_user: null,
+                        child: session,
+                        error: friendly(err),
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('hydrateFromChildSession', err);
+        }
     }
 
     async function hydrateFromFirebase(fbUser: FirebaseSdkUser | null) {
@@ -381,8 +485,15 @@ function createAuthStore() {
     async function logout() {
         ++authSyncVersion;
         nextSignedOutError = null;
+        // Cobre os dois cenarios: sessao Firebase (Pessoal/Pais) e sessao
+        // de filho. Limpamos os dois sempre — os erros sao silenciados porque
+        // queremos terminar em `signed_out` independente.
         try {
-            await signOutCurrent();
+            if (snapshot.phase === 'child_session') {
+                await clearChildSessionDb().catch(() => undefined);
+            } else {
+                await signOutCurrent();
+            }
         } finally {
             commit({
                 phase: 'signed_out',
@@ -390,6 +501,51 @@ function createAuthStore() {
                 firebase_user: null,
                 error: null,
             });
+        }
+    }
+
+    /// Fluxo "Filhos": sem Firebase, sem email/senha. Recebe o codigo de 6
+    /// digitos que o pai gerou, chama POST /devices/link/confirm (rota publica),
+    /// recebe o `dt_<token>`, persiste em SQLCipher e entra em child_session.
+    async function confirmChildCode(payload: ConfirmLinkRequest) {
+        ++authSyncVersion;
+        commit({
+            phase: 'authenticating',
+            user: null,
+            firebase_user: null,
+            error: null,
+        });
+
+        try {
+            // Garante que NAO mandamos credencial nesta request — o backend
+            // exige rota publica (sem header).
+            setAuthProvider(anonymousAuthProvider);
+            const resp = await api.confirmLinkCode(payload);
+
+            const session: ChildSession = {
+                user_id: resp.user_id,
+                device_id: resp.device_id,
+                device_token: resp.device_token,
+                parent_device_id: resp.parent_device_id,
+            };
+            await saveChildSessionDb(session);
+
+            commit({
+                phase: 'child_session',
+                user: null,
+                firebase_user: null,
+                child: session,
+                error: null,
+            });
+        } catch (err) {
+            const message = friendly(err);
+            commit({
+                phase: 'signed_out',
+                user: null,
+                firebase_user: null,
+                error: message,
+            });
+            throw asError(err, message);
         }
     }
 
@@ -431,6 +587,7 @@ function createAuthStore() {
         loginGoogle,
         register,
         completeLocalRegistration,
+        confirmChildCode,
         retryBackendSync,
         logout,
         clearError,

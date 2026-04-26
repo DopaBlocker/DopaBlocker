@@ -4,13 +4,19 @@
 -->
 <script lang="ts">
     import { onMount } from 'svelte';
+    import { goto } from '$app/navigation';
     import { AUTH_BOOTING_STATE, authStore, type AuthState } from '$lib/stores/auth';
+    import { api } from '$lib/services/api';
+    import { deleteCurrentUser } from '$lib/services/firebase';
     import { getAppVersion } from '$lib/services/tauri-bridge';
+    import { toast } from '$lib/stores/toast';
     import ConfirmModal from '$lib/components/ui/ConfirmModal.svelte';
+    import DeleteAccountModal from '$lib/components/DeleteAccountModal.svelte';
 
     let auth: AuthState = $state({ ...AUTH_BOOTING_STATE });
     let appVersion: string | null = $state(null);
     let confirmOpen = $state(false);
+    let deleteOpen = $state(false);
 
     onMount(() => {
         const unsub = authStore.subscribe((s) => (auth = s));
@@ -32,6 +38,32 @@
     function confirmLogout() {
         confirmOpen = false;
         void authStore.logout();
+    }
+
+    /// Ordem importa: Firebase primeiro (porque pode falhar com
+    /// `auth/requires-recent-login` antes de mexer no backend), so depois
+    /// o backend, so depois logout local. Se o Firebase OK mas o backend
+    /// falhar, ficamos com Firebase apagado e backend orfao — log de erro
+    /// e seguimos para o logout. O orfao morre quando o user tentar logar
+    /// (auth/login retorna 404 → re-cadastro).
+    async function handleDeleteAccount() {
+        await deleteCurrentUser();
+        try {
+            await api.deleteAccount();
+        } catch (err) {
+            console.warn('Backend delete falhou apos Firebase deletar:', err);
+        }
+        await authStore.logout();
+        toast.info('Conta excluida.');
+        await goto('/welcome');
+    }
+
+    /// Reauth: o user clica "Fazer login de novo". Logout volta para
+    /// /welcome; o user escolhe o modo, faz login e volta em /settings.
+    async function handleReauth() {
+        deleteOpen = false;
+        await authStore.logout();
+        await goto('/welcome');
     }
 </script>
 
@@ -91,6 +123,30 @@
             Sair da conta
         </button>
     </div>
+
+    <!-- Zona de perigo. Ações irreversíveis ficam isoladas visualmente para
+         o usuário não confundir com o "Sair" comum. -->
+    <div class="card-padded border-danger/30">
+        <div class="flex items-center justify-between gap-4">
+            <div class="min-w-0">
+                <div class="text-sm font-medium text-danger">
+                    Excluir conta permanentemente
+                </div>
+                <p class="mt-1 text-xs text-text-muted">
+                    Apaga sua conta, todos os bloqueios, todos os filhos
+                    vinculados (se houver) e o login no Firebase. Não dá para
+                    desfazer.
+                </p>
+            </div>
+            <button
+                type="button"
+                onclick={() => (deleteOpen = true)}
+                class="shrink-0 rounded-md border border-danger px-3 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-danger hover:text-white"
+            >
+                Excluir conta
+            </button>
+        </div>
+    </div>
 </div>
 
 <ConfirmModal
@@ -102,4 +158,11 @@
     danger
     onconfirm={confirmLogout}
     oncancel={() => (confirmOpen = false)}
+/>
+
+<DeleteAccountModal
+    open={deleteOpen}
+    onclose={() => (deleteOpen = false)}
+    onconfirm={handleDeleteAccount}
+    onreauth={handleReauth}
 />

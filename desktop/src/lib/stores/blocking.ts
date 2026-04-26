@@ -6,10 +6,26 @@
 // Padrão otimista: adicionar/remover mexe no state imediatamente e reverte
 // se o backend recusar.
 
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 import type { BlockedItem, BlockedType, BlockingStatus } from '../types';
 import { api } from '../services/api';
 import * as bridge from '../services/tauri-bridge';
+import { authStore } from './auth';
+
+/// Deriva o `ParentalContext` a ser enviado aos comandos Tauri a partir do
+/// estado atual do auth. O Rust usa isso para aplicar a regra do pai imune
+/// (device do pai em modo parental → engine recebe lista vazia).
+function parentalContext(): bridge.ParentalContext {
+    const auth = get(authStore);
+    if (auth.phase === 'child_session') {
+        // Filho aplica todos os bloqueios (gerenciados pelo pai).
+        return { mode: 'parental', is_child: true };
+    }
+    return {
+        mode: auth.user?.mode ?? 'personal',
+        is_child: false,
+    };
+}
 
 export interface BlockingState {
     items: BlockedItem[];
@@ -39,7 +55,7 @@ function createBlockingStore() {
             const items = await api.listBlocklist();
             // Espelha no cache local pra que o engine (DNS/WFP) tenha os dados
             // prontos mesmo se o backend cair depois.
-            await bridge.saveBlocklist(userId, items).catch((e) => {
+            await bridge.saveBlocklist(userId, items, parentalContext()).catch((e) => {
                 console.warn('Falha ao espelhar blocklist no cache local:', e);
             });
             const status = await bridge.getBlockingStatus(userId).catch(() => ({
@@ -76,7 +92,7 @@ function createBlockingStore() {
             items: [created, ...s.items],
             status: { ...s.status, item_count: s.status.item_count + 1 },
         }));
-        bridge.cacheAddItem(created).catch((e) =>
+        bridge.cacheAddItem(created, parentalContext()).catch((e) =>
             console.warn('Falha ao espelhar add no cache:', e),
         );
         return created;
@@ -95,7 +111,7 @@ function createBlockingStore() {
         try {
             await api.deleteBlockedItem(id);
             if (removed) {
-                bridge.cacheRemoveItem(id, removed.user_id).catch((e) =>
+                bridge.cacheRemoveItem(id, removed.user_id, parentalContext()).catch((e) =>
                     console.warn('Falha ao espelhar remove no cache:', e),
                 );
             }
@@ -116,7 +132,7 @@ function createBlockingStore() {
         // Atualiza UI primeiro, persiste depois. Se der ruim, reverte.
         update((s) => ({ ...s, status: { ...s.status, enabled } }));
         try {
-            await bridge.setBlockingEnabled(userId, enabled);
+            await bridge.setBlockingEnabled(userId, enabled, parentalContext());
         } catch (err) {
             update((s) => ({ ...s, status: { ...s.status, enabled: !enabled } }));
             throw err;

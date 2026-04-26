@@ -298,3 +298,75 @@ pub async fn confirm_link(
         parent_device_id,
     })
 }
+
+/// Revoga um device filho. Marca todos os `device_tokens` associados como
+/// revogados (`revoked_at = now`). O registro do device em `devices` permanece
+/// — fica como histórico que aquele filho já existiu, mas qualquer requisição
+/// posterior com o token antigo será rejeitada com 401 pelo middleware.
+///
+/// Salvaguardas:
+/// - O `device_id` precisa pertencer ao mesmo `user_id` do pai (impede que um
+///   pai revogue o filho de outra família).
+/// - O device tem que ter `is_child = 1` (pai não pode revogar a si mesmo
+///   por essa rota — para isso teria que ser DELETE /auth/me).
+/// - Se nada for atualizado (device não existe / não é filho / é de outro
+///   user), retornamos 404 para não vazar a existência do recurso.
+pub async fn revoke_child_device(
+    db: &Connection,
+    parent_user_id: String,
+    device_id: String,
+) -> Result<(), AppError> {
+    let now = iso_now();
+
+    let updated = db
+        .call({
+            let parent_user_id = parent_user_id.clone();
+            let device_id = device_id.clone();
+            move |c| {
+                let tx = c.transaction()?;
+
+                // Confere existência + posse + is_child em uma única query.
+                let belongs_and_is_child: bool = tx
+                    .query_row(
+                        "SELECT 1 FROM devices
+                         WHERE id = ?1 AND user_id = ?2 AND is_child = 1",
+                        params![device_id, parent_user_id],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some();
+
+                if !belongs_and_is_child {
+                    return Ok(0_usize);
+                }
+
+                let n = tx.execute(
+                    "UPDATE device_tokens
+                     SET revoked_at = ?1
+                     WHERE device_id = ?2 AND revoked_at IS NULL",
+                    params![now, device_id],
+                )?;
+
+                // Marca o link parental correspondente como 'revoked' também,
+                // para limpar a tela "Filhos vinculados" do pai.
+                tx.execute(
+                    "UPDATE parental_links
+                     SET status = 'revoked'
+                     WHERE child_device_id = ?1 AND status = 'active'",
+                    params![device_id],
+                )?;
+
+                tx.commit()?;
+                Ok(n)
+            }
+        })
+        .await
+        .map_err(map_sqlite_error)?;
+
+    if updated == 0 {
+        return Err(AppError::NotFound(
+            "Filho não encontrado ou já revogado".into(),
+        ));
+    }
+    Ok(())
+}

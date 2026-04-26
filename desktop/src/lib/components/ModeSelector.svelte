@@ -1,7 +1,7 @@
 <!--
-  Seletor de modo da conta. Três cards — Pessoal (avança o cadastro),
-  Pais e Filhos (badge "Em breve", não avançam). Design intencional: mantém
-  a UI final coerente sem implementar o fluxo parental no v0.1.
+  Seletor de modo da conta. Três cards: Pessoal (cria conta para uso pessoal),
+  Pais (cria conta + gera códigos para filhos) e Filhos (não cria conta —
+  vincula este dispositivo via código de 6 dígitos da conta de um responsável).
 -->
 <script lang="ts">
     type Mode = 'personal' | 'parent' | 'child';
@@ -29,13 +29,13 @@
             mode: 'parent',
             label: 'Pais',
             description: 'Gerencie o bloqueio dos dispositivos dos seus filhos.',
-            available: false,
+            available: true,
         },
         {
             mode: 'child',
             label: 'Filhos',
             description: 'Vincule este dispositivo à conta de um responsável.',
-            available: false,
+            available: true,
         },
     ];
 </script>

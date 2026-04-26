@@ -23,7 +23,7 @@
 // =============================================================================
 
 use axum::{
-    extract::State,
+    extract::{Path, State},
     routing::{get, post},
     Extension, Json, Router,
 };
@@ -32,7 +32,7 @@ use crate::errors::AppError;
 use crate::middleware::{AuthSource, AuthUser};
 use crate::models::{
     ConfirmLinkRequest, ConfirmLinkResponse, Device, GenerateLinkCodeResponse,
-    RegisterDeviceRequest,
+    RegisterDeviceRequest, SuccessResponse,
 };
 use crate::services::device_service;
 use crate::AppState;
@@ -44,6 +44,7 @@ pub fn protected_router() -> Router<AppState> {
         .route("/register", post(register_device))
         .route("/", get(list_devices))
         .route("/link/generate", post(generate_link_code))
+        .route("/{id}/revoke", post(revoke_device))
 }
 
 /// Rota pública — apenas `/devices/link/confirm`. Note que aqui o path é
@@ -105,4 +106,24 @@ async fn confirm_link(
 ) -> Result<Json<ConfirmLinkResponse>, AppError> {
     let resp = device_service::confirm_link(&state.db, payload).await?;
     Ok(Json(resp))
+}
+
+/// `POST /devices/:id/revoke` — pai desvincula um filho. Apenas Firebase JWT
+/// (mesma justificativa de `/link/generate`). O service confere que o device
+/// pertence ao `user_id` autenticado E que é `is_child=true`. Após revogar,
+/// qualquer request com o token antigo cai em 401.
+async fn revoke_device(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(device_id): Path<String>,
+) -> Result<Json<SuccessResponse>, AppError> {
+    if auth.source != AuthSource::Firebase {
+        return Err(AppError::Forbidden(
+            "Apenas contas Firebase podem revogar dispositivos vinculados".into(),
+        ));
+    }
+    device_service::revoke_child_device(&state.db, auth.user_id, device_id).await?;
+    Ok(Json(SuccessResponse {
+        message: "Dispositivo desvinculado".into(),
+    }))
 }

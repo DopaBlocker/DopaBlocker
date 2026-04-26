@@ -9,9 +9,11 @@
     interface Props {
         items: BlockedItem[];
         onremove: (id: string) => void;
+        /** True esconde o botao de remover (modo Filhos — read-only). */
+        readOnly?: boolean;
     }
 
-    let { items, onremove }: Props = $props();
+    let { items, onremove, readOnly = false }: Props = $props();
 
     function typeLabel(t: BlockedItem['item_type']) {
         switch (t) {
@@ -81,26 +83,28 @@
                     <span class="hidden text-xs text-text-dim sm:block">
                         {relativeTime(item.created_at)}
                     </span>
-                    <button
-                        type="button"
-                        aria-label="Remover {item.value}"
-                        onclick={() => onremove(item.id)}
-                        class="btn-icon text-text-dim opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 focus-visible:opacity-100"
-                    >
-                        <svg
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.5"
-                            class="h-4 w-4"
+                    {#if !readOnly}
+                        <button
+                            type="button"
+                            aria-label="Remover {item.value}"
+                            onclick={() => onremove(item.id)}
+                            class="btn-icon text-text-dim opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 focus-visible:opacity-100"
                         >
-                            <path
-                                d="M3 4h10M6.5 4V3a1 1 0 011-1h1a1 1 0 011 1v1M5 4l.5 9a1 1 0 001 1h3a1 1 0 001-1L11 4"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                            />
-                        </svg>
-                    </button>
+                            <svg
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.5"
+                                class="h-4 w-4"
+                            >
+                                <path
+                                    d="M3 4h10M6.5 4V3a1 1 0 011-1h1a1 1 0 011 1v1M5 4l.5 9a1 1 0 001 1h3a1 1 0 001-1L11 4"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                />
+                            </svg>
+                        </button>
+                    {/if}
                 </li>
             {/each}
         </ul>

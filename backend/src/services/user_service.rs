@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::models::{BlockMode, User};
+use crate::services::auth_service::normalize_email;
 use crate::services::util::{block_mode_to_sql, parse_block_mode};
 
 // Conversões enum ↔ string vivem em `services/util.rs` (block_mode_to_sql /
@@ -44,12 +45,17 @@ pub async fn create_user(
 ) -> Result<User, AppError> {
     let id = Uuid::new_v4().to_string();
     let mode_str = block_mode_to_sql(&mode).to_string();
+    // Normaliza o email antes de gravar para garantir consistencia em todo o
+    // app — `auth_service::create_user_with_email_verification` ja faz isso;
+    // este caminho (Google login direto) tambem precisa.
+    let normalized_email = normalize_email(&email)?;
+    let display_name = display_name.trim().to_string();
 
     // Clones porque o closure precisa ser `move` e `'static` — o original
     // pode ser reutilizado depois do `.await` (ex: no get_user_by_firebase_uid).
     let id_clone = id.clone();
     let firebase_uid_clone = firebase_uid.clone();
-    let email_clone = email.clone();
+    let email_clone = normalized_email;
     let display_name_clone = display_name.clone();
 
     db.call(move |c| {
@@ -104,6 +110,49 @@ pub async fn get_user_by_firebase_uid(
             // distinguir "erro real" de "não achou" no caller.
             .optional()?;
         Ok(r)
+    })
+    .await
+    .map_err(|e| AppError::InternalServerError(e.to_string()))
+}
+
+/// Apaga a conta do usuário e tudo que depende dela. Usado por `DELETE /auth/me`.
+///
+/// As FKs `ON DELETE CASCADE` cuidam de `devices`, `blocked_items`,
+/// `parental_links`, `adult_filter_settings` e `device_tokens`. Mas
+/// `email_verifications` referencia o user **por email** (sem FK — a tabela
+/// existe antes do user, durante o fluxo de cadastro), então precisa ser
+/// apagada manualmente para não vazar dados antigos do email entre contas.
+///
+/// Tudo em uma transação: ou apaga tudo, ou nada. Se o `email_verifications`
+/// falhar, o `users` volta atrás.
+pub async fn delete_user(db: &Connection, user_id: String) -> Result<(), AppError> {
+    db.call(move |c| {
+        let tx = c.transaction()?;
+
+        // Pega o email para limpar `email_verifications` antes de apagar o user.
+        let email: Option<String> = tx
+            .query_row(
+                "SELECT email FROM users WHERE id = ?1",
+                params![user_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        let Some(email) = email else {
+            // User não existe — tratado como sucesso idempotente. O caller
+            // (handler) recebeu `auth.user_id` válido, então isso só rola se
+            // duas requisições concorrentes chegarem ao mesmo tempo.
+            return Ok(());
+        };
+
+        tx.execute("DELETE FROM users WHERE id = ?1", params![user_id])?;
+        tx.execute(
+            "DELETE FROM email_verifications WHERE email = ?1",
+            params![email],
+        )?;
+
+        tx.commit()?;
+        Ok(())
     })
     .await
     .map_err(|e| AppError::InternalServerError(e.to_string()))

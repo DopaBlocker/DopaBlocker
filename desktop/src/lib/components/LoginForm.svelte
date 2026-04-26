@@ -7,10 +7,18 @@
         type AuthState,
     } from '$lib/stores/auth';
     import { api } from '$lib/services/api';
-    import ModeSelector from './ModeSelector.svelte';
+    import { sendPasswordReset } from '$lib/services/firebase';
 
     type Tab = 'signin' | 'signup';
     type SignupStep = 'form' | 'verify';
+
+    interface Props {
+        /** Vem da URL (`?mode=personal` ou `?mode=parental`). Filhos nao
+         *  passam por aqui — vao direto para /onboarding/child. */
+        mode: 'personal' | 'parental';
+    }
+
+    let { mode }: Props = $props();
 
     let auth: AuthState = $state({ ...AUTH_BOOTING_STATE });
     let tab: Tab = $state('signin');
@@ -160,6 +168,37 @@
         }
     }
 
+    async function handleForgotPassword() {
+        if (submitting) return;
+        resetFeedback();
+
+        const target = email.trim();
+        if (!target) {
+            formError = 'Digite seu email para receber o link de redefinicao.';
+            return;
+        }
+
+        submitting = true;
+        try {
+            await sendPasswordReset(target);
+            infoMessage = `Enviamos um link de redefinicao para ${target}. Confira sua caixa de entrada.`;
+        } catch (err) {
+            // Por seguranca, o Firebase nao distingue email inexistente — qualquer
+            // erro vira a mensagem generica. Logamos no console para debug local.
+            console.warn('sendPasswordReset', err);
+            const code = (err as { code?: string }).code;
+            if (code === 'auth/invalid-email') {
+                formError = 'Email invalido.';
+            } else if (code === 'auth/network-request-failed') {
+                formError = 'Sem conexao com a internet.';
+            } else {
+                infoMessage = `Se ${target} estiver cadastrado, voce recebera um email com o link.`;
+            }
+        } finally {
+            submitting = false;
+        }
+    }
+
     async function handleRetryBackendSync() {
         if (submitting) return;
 
@@ -213,17 +252,36 @@
         return { mail, name };
     }
 
-    async function beginEmailVerification(mode: 'personal' | 'parent' | 'child') {
+    /// Inicia o cadastro: envia codigo de verificacao por email. O `mode` ja
+    /// vem da prop (escolhido em /welcome), entao nao precisamos mais de logica
+    /// de selecao aqui — basta validar o form, mandar codigo, ir para o step
+    /// de verificacao.
+    ///
+    /// Para login Google ja autenticado mas sem registro local
+    /// (`pendingLocalRegistration`), pulamos o codigo: o email ja foi
+    /// verificado pelo Google.
+    async function handleSignupSubmit(e: Event) {
+        e.preventDefault();
+        if (submitting) return;
+
         resetFeedback();
-
-        if (mode !== 'personal') {
-            infoMessage = 'Esse modo chega na v0.2 - por ora so o Pessoal esta disponivel.';
-            return;
-        }
-
         const identity = resolveSignupIdentity();
         if (!identity) return;
 
+        // Caminho Google → so falta criar o user local.
+        if (pendingProviderSkipsCode) {
+            submitting = true;
+            try {
+                await authStore.completeLocalRegistration(mode, identity.name);
+            } catch (err) {
+                formError = err instanceof Error ? err.message : String(err);
+            } finally {
+                submitting = false;
+            }
+            return;
+        }
+
+        // Caminho normal (email + senha) → manda codigo.
         submitting = true;
         try {
             const response = await api.startEmailVerification({ email: identity.mail });
@@ -235,27 +293,6 @@
         } finally {
             submitting = false;
         }
-    }
-
-    async function handleModeSelect(mode: 'personal' | 'parent' | 'child') {
-        if (submitting) return;
-        if (pendingProviderSkipsCode && mode === 'personal') {
-            resetFeedback();
-            const identity = resolveSignupIdentity();
-            if (!identity) return;
-
-            submitting = true;
-            try {
-                await authStore.completeLocalRegistration('personal', identity.name);
-            } catch (err) {
-                formError = err instanceof Error ? err.message : String(err);
-            } finally {
-                submitting = false;
-            }
-            return;
-        }
-
-        await beginEmailVerification(mode);
     }
 
     async function handleVerifyAndRegister(e?: Event) {
@@ -282,7 +319,7 @@
 
             if (pendingLocalRegistration) {
                 await authStore.completeLocalRegistration(
-                    'personal',
+                    mode,
                     identity.name,
                     verified.email_verification_token,
                 );
@@ -291,7 +328,7 @@
                     verificationEmail || identity.mail,
                     password,
                     identity.name,
-                    'personal',
+                    mode,
                     verified.email_verification_token,
                 );
             }
@@ -304,7 +341,23 @@
 
     async function handleResendCode() {
         if (submitting || resendRemaining > 0) return;
-        await beginEmailVerification('personal');
+        // Reaproveita o handler — joga em `signupStep='form'` virtualmente
+        // chamando o mesmo fluxo de envio de codigo (sem perder o codigo
+        // digitado, mas resetando o cooldown).
+        resetFeedback();
+        const identity = resolveSignupIdentity();
+        if (!identity) return;
+
+        submitting = true;
+        try {
+            const response = await api.startEmailVerification({ email: identity.mail });
+            verificationEmail = identity.mail;
+            setResendCooldown(response.resend_after_seconds);
+        } catch (err) {
+            formError = err instanceof Error ? err.message : String(err);
+        } finally {
+            submitting = false;
+        }
     }
 
     function handleEditSignupEmail() {
@@ -399,6 +452,14 @@
             <button type="submit" disabled={submitting} class="btn-primary mt-2 w-full">
                 {submitting ? 'Entrando...' : 'Entrar'}
             </button>
+            <button
+                type="button"
+                onclick={handleForgotPassword}
+                disabled={submitting}
+                class="self-end text-xs text-text-muted underline-offset-2 transition-colors hover:text-text hover:underline disabled:opacity-50"
+            >
+                Esqueci minha senha
+            </button>
         </form>
 
         <div class="my-5 flex items-center gap-3">
@@ -432,8 +493,7 @@
                 if (signupStep === 'verify') {
                     void handleVerifyAndRegister(e);
                 } else {
-                    e.preventDefault();
-                    void handleModeSelect('personal');
+                    void handleSignupSubmit(e);
                 }
             }}
         >
@@ -540,14 +600,27 @@
                     </label>
                 {/if}
 
-                <div class="mt-2">
-                    <div class="field-label mb-2">
-                        {pendingLocalRegistration
-                            ? 'Escolha o modo local para concluir'
-                            : 'Escolha o modo'}
-                    </div>
-                    <ModeSelector onselect={handleModeSelect} />
+                <div
+                    class="rounded-md border border-border bg-surface-2 px-3 py-2 text-xs text-text-muted"
+                >
+                    Modo: <strong class="text-text">
+                        {mode === 'parental' ? 'Pais' : 'Pessoal'}
+                    </strong>
+                    <a
+                        href="/welcome"
+                        class="ml-1 text-primary underline-offset-2 hover:underline"
+                    >
+                        trocar
+                    </a>
                 </div>
+
+                <button type="submit" disabled={submitting} class="btn-primary mt-2 w-full">
+                    {submitting
+                        ? 'Enviando…'
+                        : mode === 'parental'
+                          ? 'Criar conta de Pai'
+                          : 'Criar conta Pessoal'}
+                </button>
             {/if}
         </form>
     {/if}

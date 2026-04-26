@@ -16,8 +16,10 @@ import {
     GoogleAuthProvider,
     browserLocalPersistence,
     createUserWithEmailAndPassword,
+    deleteUser,
     getAuth,
     onAuthStateChanged,
+    sendPasswordResetEmail,
     setPersistence,
     signInWithEmailAndPassword,
     signInWithPopup,
@@ -80,6 +82,28 @@ export async function signInGoogle(): Promise<FirebaseUser> {
 
 export async function signOutCurrent(): Promise<void> {
     await signOut(getFirebaseAuth());
+}
+
+/// Dispara o email "reset de senha" do Firebase. O usuario clica no link,
+/// define a nova senha numa pagina hospedada pelo Firebase, e depois volta
+/// ao app para fazer login com a nova senha. Backend nao precisa saber.
+export async function sendPasswordReset(email: string): Promise<void> {
+    await sendPasswordResetEmail(getFirebaseAuth(), email);
+}
+
+/// Apaga o user atual no Firebase Auth. Para o backend ser limpo, chame
+/// `api.deleteAccount()` ANTES — o backend usa o JWT do user (que expira
+/// junto com o user) para autorizar.
+///
+/// Pode falhar com `auth/requires-recent-login` se o ultimo login foi ha
+/// muito tempo (politica do Firebase). O caller deve capturar e pedir
+/// reauth.
+export async function deleteCurrentUser(): Promise<void> {
+    const user = getFirebaseAuth().currentUser;
+    if (!user) {
+        throw new Error('Nao ha usuario Firebase autenticado.');
+    }
+    await deleteUser(user);
 }
 
 export function onAuthChange(cb: (user: FirebaseUser | null) => void): () => void {

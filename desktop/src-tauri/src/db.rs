@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 use rand::RngCore;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use tauri::{AppHandle, Manager};
 use thiserror::Error;
 use tokio_rusqlite::Connection;
@@ -30,10 +30,16 @@ const DB_FILENAME: &str = "dopablocker-local.db";
 // Embutidas no binário — um `cargo build` gera um executável auto-contido
 // que carrega seu próprio schema. Para adicionar migration nova, criar
 // 002_xxx.sql e acrescentar aqui, nunca editar uma já em produção.
-const MIGRATIONS: &[(&str, &str)] = &[(
-    "001_local_cache",
-    include_str!("../migrations/001_local_cache.sql"),
-)];
+const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "001_local_cache",
+        include_str!("../migrations/001_local_cache.sql"),
+    ),
+    (
+        "002_child_session",
+        include_str!("../migrations/002_child_session.sql"),
+    ),
+];
 
 #[derive(Debug, Error)]
 pub enum DbError {
@@ -335,6 +341,77 @@ pub async fn set_last_active_user_id(conn: &Connection, user_id: String) -> DbRe
 
 pub async fn get_last_active_user_id(conn: &Connection) -> DbResult<Option<String>> {
     get_state(conn, "last_active_user_id").await
+}
+
+// -------- child_session ------------------------------------------------------
+//
+// Sessao do filho (sem conta Firebase). Singleton — sempre id = 1. O token
+// fica em texto puro porque o SQLCipher inteiro ja e cifrado pela chave do
+// Credential Manager.
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ChildSession {
+    pub user_id: String,
+    pub device_id: String,
+    pub device_token: String,
+    pub parent_device_id: String,
+}
+
+pub async fn save_child_session(conn: &Connection, session: ChildSession) -> DbResult<()> {
+    conn.call(move |c| {
+        c.execute(
+            "INSERT INTO child_session(id, user_id, device_id, device_token, parent_device_id)
+             VALUES (1, ?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET
+                user_id = excluded.user_id,
+                device_id = excluded.device_id,
+                device_token = excluded.device_token,
+                parent_device_id = excluded.parent_device_id,
+                created_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+            params![
+                session.user_id,
+                session.device_id,
+                session.device_token,
+                session.parent_device_id,
+            ],
+        )?;
+        Ok(())
+    })
+    .await?;
+    Ok(())
+}
+
+pub async fn load_child_session(conn: &Connection) -> DbResult<Option<ChildSession>> {
+    let row = conn
+        .call(|c| {
+            let r = c
+                .query_row(
+                    "SELECT user_id, device_id, device_token, parent_device_id
+                     FROM child_session WHERE id = 1",
+                    [],
+                    |row| {
+                        Ok(ChildSession {
+                            user_id: row.get(0)?,
+                            device_id: row.get(1)?,
+                            device_token: row.get(2)?,
+                            parent_device_id: row.get(3)?,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(r)
+        })
+        .await?;
+    Ok(row)
+}
+
+pub async fn clear_child_session(conn: &Connection) -> DbResult<()> {
+    conn.call(|c| {
+        c.execute("DELETE FROM child_session WHERE id = 1", [])?;
+        Ok(())
+    })
+    .await?;
+    Ok(())
 }
 
 // -------- helpers ------------------------------------------------------------

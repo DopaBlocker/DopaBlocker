@@ -1,17 +1,17 @@
 use axum::{
     extract::State,
     http::HeaderMap,
-    routing::{get, post},
+    routing::{delete, get, post},
     Extension, Json, Router,
 };
 
 use crate::errors::AppError;
 use crate::middleware::{
-    extract_bearer_token, verify_firebase_jwt_token, AuthUser, FirebaseClaims,
+    extract_bearer_token, verify_firebase_jwt_token, AuthSource, AuthUser, FirebaseClaims,
 };
 use crate::models::{
     EmailCodeStartRequest, EmailCodeStartResponse, EmailCodeVerifyRequest, EmailCodeVerifyResponse,
-    RegisterRequest, User,
+    RegisterRequest, SuccessResponse, User,
 };
 use crate::services::{auth_service, user_service};
 use crate::AppState;
@@ -25,7 +25,9 @@ pub fn public_router() -> Router<AppState> {
 }
 
 pub fn protected_router() -> Router<AppState> {
-    Router::new().route("/auth/me", get(me))
+    Router::new()
+        .route("/auth/me", get(me))
+        .route("/auth/me", delete(delete_me))
 }
 
 fn resolve_registration_identity(
@@ -178,6 +180,28 @@ async fn me(
 ) -> Result<Json<User>, AppError> {
     let user = user_service::get_user_by_id(&state.db, auth.user_id).await?;
     Ok(Json(user))
+}
+
+/// `DELETE /auth/me` — exclusao definitiva da conta. Apenas Firebase JWT;
+/// Device Tokens (filhos) sao rejeitados. O service apaga `users` e cascateia
+/// para `devices`, `blocked_items`, `parental_links`, `adult_filter_settings`
+/// e `device_tokens`. Tambem limpa `email_verifications` pelo email do user.
+///
+/// O frontend e responsavel por tambem chamar `firebase.deleteUser()` —
+/// o backend nao integra com Firebase Admin SDK no v0.1.
+async fn delete_me(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<SuccessResponse>, AppError> {
+    if auth.source != AuthSource::Firebase {
+        return Err(AppError::Forbidden(
+            "Apenas o titular da conta Firebase pode excluir".into(),
+        ));
+    }
+    user_service::delete_user(&state.db, auth.user_id).await?;
+    Ok(Json(SuccessResponse {
+        message: "Conta excluida".into(),
+    }))
 }
 
 #[cfg(test)]

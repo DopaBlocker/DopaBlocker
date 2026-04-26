@@ -79,3 +79,37 @@ export interface CreateBlockedItemRequest {
     item_type: BlockedType;
     value: string;
 }
+
+// ---- devices / parental ----
+
+export interface GenerateLinkCodeResponse {
+    code: string;
+    expires_at: string;
+}
+
+export interface ConfirmLinkRequest {
+    code: string;
+    device_name: string;
+    platform: Platform;
+}
+
+export interface ConfirmLinkResponse {
+    /** Formato "dt_<plain>". O cliente do filho guarda em SQLCipher local e
+     * envia em todo header Authorization. */
+    device_token: string;
+    device_id: string;
+    user_id: string;
+    parent_device_id: string;
+}
+
+export interface SuccessResponse {
+    message: string;
+}
+
+/** Espelha a struct ChildSession persistida em SQLCipher (db.rs). */
+export interface ChildSession {
+    user_id: string;
+    device_id: string;
+    device_token: string;
+    parent_device_id: string;
+}

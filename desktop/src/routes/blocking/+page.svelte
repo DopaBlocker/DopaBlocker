@@ -29,12 +29,17 @@
         error: null,
     });
     let currentUserId: string | null = $state(null);
+    let isChild = $state(false);
     let modalOpen = $state(false);
 
     onMount(() => {
         const unsubA = authStore.subscribe((s: AuthState) => {
-            currentUserId = s.user?.id ?? null;
-            if (s.user) void blockingStore.load(s.user.id);
+            // Sessao de filho: o user_id vem do `auth.child` (e o user_id do
+            // pai), nao de `auth.user`. Carregamos a blocklist do pai mas
+            // bloqueamos qualquer write a partir da UI (read-only).
+            isChild = s.phase === 'child_session';
+            currentUserId = s.user?.id ?? s.child?.user_id ?? null;
+            if (currentUserId) void blockingStore.load(currentUserId);
         });
         const unsubB = blockingStore.subscribe((s) => (block = s));
         return () => {
@@ -96,14 +101,25 @@
                 enquanto o bloqueio está ativo.
             </p>
         </div>
-        <button type="button" onclick={() => (modalOpen = true)} class="btn-primary">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75"
-                class="h-4 w-4">
-                <path d="M8 3v10M3 8h10" stroke-linecap="round" />
-            </svg>
-            Adicionar
-        </button>
+        {#if !isChild}
+            <button type="button" onclick={() => (modalOpen = true)} class="btn-primary">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75"
+                    class="h-4 w-4">
+                    <path d="M8 3v10M3 8h10" stroke-linecap="round" />
+                </svg>
+                Adicionar
+            </button>
+        {/if}
     </header>
+
+    {#if isChild}
+        <div
+            class="rounded-md border border-secondary/50 bg-secondary/10 px-3 py-2 text-xs text-secondary"
+        >
+            Voce esta no modo Filhos — a lista e gerenciada pelo responsavel.
+            Apenas visualizacao.
+        </div>
+    {/if}
 
     <!-- Engine master toggle. -->
     <div class="card-padded flex items-center justify-between gap-4">
@@ -126,6 +142,7 @@
         <button
             type="button"
             onclick={handleToggleEngine}
+            disabled={isChild}
             class={block.status.enabled ? 'btn-secondary' : 'btn-primary'}
         >
             {block.status.enabled ? 'Pausar' : 'Ativar bloqueio'}
@@ -152,7 +169,8 @@
         <button
             type="button"
             onclick={handleToggleAdult}
-            class="relative h-6 w-11 rounded-full border transition-colors"
+            disabled={isChild}
+            class="relative h-6 w-11 rounded-full border transition-colors disabled:opacity-50"
             class:bg-primary={block.status.adult_filter_enabled}
             class:border-primary={block.status.adult_filter_enabled}
             class:bg-surface-2={!block.status.adult_filter_enabled}
@@ -171,7 +189,7 @@
     {#if block.loading}
         <div class="py-8 text-center text-xs text-text-muted">Carregando…</div>
     {:else}
-        <BlockList items={block.items} onremove={handleRemove} />
+        <BlockList items={block.items} onremove={handleRemove} readOnly={isChild} />
     {/if}
 </div>
 

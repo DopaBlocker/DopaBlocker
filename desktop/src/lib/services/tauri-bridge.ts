@@ -4,7 +4,14 @@
 // do cache local, portanto manter `save_blocklist` em sincronia é essencial.
 
 import { invoke } from '@tauri-apps/api/core';
-import type { BlockedItem, BlockingStatus } from '../types';
+import type { BlockMode, BlockedItem, BlockingStatus, ChildSession } from '../types';
+
+/// Contexto que o engine usa para decidir se aplica a regra do pai imune.
+/// Espelha `ParentalContext` em desktop/src-tauri/src/commands.rs.
+export interface ParentalContext {
+    mode: BlockMode;
+    is_child: boolean;
+}
 
 export function getAppVersion(): Promise<string> {
     return invoke<string>('get_app_version');
@@ -14,20 +21,32 @@ export function listCachedBlocklist(userId: string): Promise<BlockedItem[]> {
     return invoke<BlockedItem[]>('list_cached_blocklist', { userId });
 }
 
-export function saveBlocklist(userId: string, items: BlockedItem[]): Promise<void> {
-    return invoke<void>('save_blocklist', { userId, items });
+export function saveBlocklist(
+    userId: string,
+    items: BlockedItem[],
+    parental?: ParentalContext,
+): Promise<void> {
+    return invoke<void>('save_blocklist', { userId, items, parental });
 }
 
-export function cacheAddItem(item: BlockedItem): Promise<void> {
-    return invoke<void>('cache_add_item', { item });
+export function cacheAddItem(item: BlockedItem, parental?: ParentalContext): Promise<void> {
+    return invoke<void>('cache_add_item', { item, parental });
 }
 
-export function cacheRemoveItem(id: string, userId: string): Promise<void> {
-    return invoke<void>('cache_remove_item', { id, userId });
+export function cacheRemoveItem(
+    id: string,
+    userId: string,
+    parental?: ParentalContext,
+): Promise<void> {
+    return invoke<void>('cache_remove_item', { id, userId, parental });
 }
 
-export function setBlockingEnabled(userId: string, enabled: boolean): Promise<void> {
-    return invoke<void>('set_blocking_enabled', { userId, enabled });
+export function setBlockingEnabled(
+    userId: string,
+    enabled: boolean,
+    parental?: ParentalContext,
+): Promise<void> {
+    return invoke<void>('set_blocking_enabled', { userId, enabled, parental });
 }
 
 export function setAdultFilterEnabled(enabled: boolean): Promise<void> {
@@ -36,4 +55,23 @@ export function setAdultFilterEnabled(enabled: boolean): Promise<void> {
 
 export function getBlockingStatus(userId: string): Promise<BlockingStatus> {
     return invoke<BlockingStatus>('get_blocking_status', { userId });
+}
+
+// ---- child_session (sessao de filho persistida em SQLCipher) ----
+
+export function saveChildSession(session: ChildSession): Promise<void> {
+    return invoke<void>('save_child_session', {
+        userId: session.user_id,
+        deviceId: session.device_id,
+        deviceToken: session.device_token,
+        parentDeviceId: session.parent_device_id,
+    });
+}
+
+export function loadChildSession(): Promise<ChildSession | null> {
+    return invoke<ChildSession | null>('load_child_session');
+}
+
+export function clearChildSession(): Promise<void> {
+    return invoke<void>('clear_child_session');
 }

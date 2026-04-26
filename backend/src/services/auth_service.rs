@@ -320,7 +320,11 @@ pub async fn create_user_with_email_verification(
     let id = Uuid::new_v4().to_string();
     let now = iso_now();
     let mode_str = block_mode_to_sql(&mode).to_string();
-    let email = email.trim().to_string();
+    // Persistimos sempre a versao normalizada — mesmas regras (trim+lowercase)
+    // aplicadas pelo `normalize_email`. Isto evita que `User@Example.COM` e
+    // `user@example.com` virem registros distintos depois de uma alteracao
+    // de provedor (Firebase pode mandar com case diferente em casos de borda).
+    let email = normalized_email.clone();
     let display_name = display_name.trim().to_string();
 
     db.call(move |c| {

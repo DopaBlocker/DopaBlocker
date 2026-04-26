@@ -1,19 +1,26 @@
 // Cliente HTTP para o backend Axum. Responsabilidades:
-//   1. Injetar o Firebase JWT em `Authorization: Bearer ...` em cada request.
-//   2. Retry single-shot em 401 (token possivelmente expirado) após refresh.
+//   1. Pedir ao AuthProvider corrente o header `Authorization` (Firebase JWT
+//      ou Device Token, dependendo do estado do auth store).
+//   2. Retry single-shot em 401 (token possivelmente expirado) — apenas se o
+//      provider suporta refresh (Firebase). Device Token nao tenta de novo.
 //   3. Parsear erros do formato `{ "error": "..." }` e expor via `ApiError`.
 //   4. Tipar retornos com base em `types.ts`.
 
-import { getIdToken } from './firebase';
+import { currentAuthProvider } from './auth-provider';
 import type {
     AdultFilterSettings,
     BlockedItem,
+    ConfirmLinkRequest,
+    ConfirmLinkResponse,
     CreateBlockedItemRequest,
+    Device,
     EmailCodeStartRequest,
     EmailCodeStartResponse,
     EmailCodeVerifyRequest,
     EmailCodeVerifyResponse,
+    GenerateLinkCodeResponse,
     RegisterRequest,
+    SuccessResponse,
     User,
 } from '../types';
 
@@ -36,12 +43,13 @@ async function request<T>(
     body?: unknown,
     retriedOnce = false,
 ): Promise<T> {
-    const token = await getIdToken();
+    const provider = currentAuthProvider();
+    const authHeader = await provider.getAuthHeader();
     const headers: Record<string, string> = {};
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    if (token) headers['Authorization'] = `Bearer ${token}`;
+    if (authHeader) headers['Authorization'] = authHeader;
 
     let res: Response;
     try {
@@ -63,9 +71,13 @@ async function request<T>(
         window.clearTimeout(timeoutId);
     }
 
-    if (res.status === 401 && !retriedOnce && token) {
-        await getIdToken(true);
-        return request<T>(method, path, body, true);
+    // Retry só se há provider que sabe refrescar (Firebase). Device Token
+    // não expira — se voltar 401, é porque o pai revogou e não adianta tentar.
+    if (res.status === 401 && !retriedOnce && authHeader) {
+        const refreshed = await provider.refresh();
+        if (refreshed) {
+            return request<T>(method, path, body, true);
+        }
     }
 
     if (!res.ok) {
@@ -85,6 +97,7 @@ async function request<T>(
 }
 
 export const api = {
+    // ---- auth ----
     startEmailVerification: (payload: EmailCodeStartRequest) =>
         request<EmailCodeStartResponse>('POST', '/auth/email-code/start', payload),
 
@@ -98,6 +111,9 @@ export const api = {
 
     me: () => request<User>('GET', '/auth/me'),
 
+    deleteAccount: () => request<SuccessResponse>('DELETE', '/auth/me'),
+
+    // ---- blocklist ----
     listBlocklist: () => request<BlockedItem[]>('GET', '/blocklist'),
 
     createBlockedItem: (payload: CreateBlockedItemRequest) =>
@@ -108,4 +124,16 @@ export const api = {
 
     setAdultFilter: (enabled: boolean) =>
         request<AdultFilterSettings>('PUT', '/blocklist/adult-filter', { enabled }),
+
+    // ---- devices / parental ----
+    listDevices: () => request<Device[]>('GET', '/devices'),
+
+    generateLinkCode: () =>
+        request<GenerateLinkCodeResponse>('POST', '/devices/link/generate'),
+
+    confirmLinkCode: (payload: ConfirmLinkRequest) =>
+        request<ConfirmLinkResponse>('POST', '/devices/link/confirm', payload),
+
+    revokeDevice: (id: string) =>
+        request<SuccessResponse>('POST', `/devices/${id}/revoke`),
 };

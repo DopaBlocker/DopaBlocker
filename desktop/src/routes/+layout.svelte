@@ -16,7 +16,8 @@
     import ToastContainer from '$lib/components/ui/Toast.svelte';
     import '../app.css';
 
-    const PUBLIC_ROUTES = ['/login'];
+    const PUBLIC_ROUTES = ['/welcome', '/login', '/onboarding/child'];
+    const CHILD_ROUTE = '/child-blocked';
     const ONBOARDING_KEY_PREFIX = 'dopablocker:onboarding:';
 
     let { children } = $props();
@@ -51,14 +52,41 @@
         return PUBLIC_ROUTES.some((r) => path === r || path.startsWith(r + '/'));
     }
 
+    // Conta autenticada cobre tanto sessao Firebase (Pessoal/Pais) quanto
+    // sessao de filho (sem Firebase, com Device Token).
+    const isAuthenticated = $derived(
+        auth.phase === 'authenticated' || auth.phase === 'child_session',
+    );
+    const isChild = $derived(auth.phase === 'child_session');
+    const isParental = $derived(!isChild && auth.user?.mode === 'parental');
+
     $effect(() => {
         if (auth.phase === 'booting' || auth.phase === 'authenticating') return;
         const path = page.url.pathname;
         const publicRoute = isPublicRoute(path);
-        if (auth.phase !== 'authenticated' && !publicRoute) {
-            goto('/login', { replaceState: true });
-        } else if (auth.phase === 'authenticated' && publicRoute) {
-            goto('/', { replaceState: true });
+
+        if (isChild) {
+            // Sessao de filho fica AMARRADA em /child-blocked — sem dashboard,
+            // sem /blocking, sem nada. So a tela "Bloqueado".
+            if (path !== CHILD_ROUTE) {
+                goto(CHILD_ROUTE, { replaceState: true });
+            }
+            return;
+        }
+
+        if (auth.phase === 'authenticated') {
+            // Firebase: bloqueia rotas publicas e a rota de filho.
+            if (publicRoute || path === CHILD_ROUTE) {
+                goto('/', { replaceState: true });
+            }
+            return;
+        }
+
+        // signed_out / qualquer outro estado terminal: redireciona pra /welcome
+        // exceto se ja esta numa rota publica (incluindo /child-blocked, que
+        // pode aparecer brevemente antes do logout do filho propagar).
+        if (!publicRoute && path !== CHILD_ROUTE) {
+            goto('/welcome', { replaceState: true });
         }
     });
 
@@ -73,27 +101,37 @@
         void authStore.logout();
     }
 
-    const navLinks: {
-        href: string;
-        label: string;
-        icon: 'dashboard' | 'shield' | 'settings';
-    }[] = [
+    type NavIcon = 'dashboard' | 'shield' | 'settings' | 'parental';
+    const navLinks = $derived<{ href: string; label: string; icon: NavIcon }[]>([
         { href: '/', label: 'Dashboard', icon: 'dashboard' },
         { href: '/blocking', label: 'Bloqueios', icon: 'shield' },
+        ...(isParental
+            ? [{ href: '/parental', label: 'Filhos', icon: 'parental' as const }]
+            : []),
         { href: '/settings', label: 'Configurações', icon: 'settings' },
-    ];
+    ]);
 
     function isActive(href: string, path: string) {
         if (href === '/') return path === '/';
         return path === href || path.startsWith(href + '/');
     }
+
+    // Texto exibido no card da sidebar — varia entre sessao Firebase e child.
+    const sidebarPrimary = $derived(
+        isChild
+            ? 'Dispositivo vinculado'
+            : (auth.user?.display_name || auth.user?.email || ''),
+    );
+    const sidebarSecondary = $derived(
+        isChild ? 'Modo Filho (read-only)' : (auth.user?.email ?? ''),
+    );
 </script>
 
 {#if auth.phase === 'booting' || auth.phase === 'authenticating'}
     <div class="flex min-h-screen items-center justify-center bg-bg">
         <div class="text-xs text-text-muted">Carregando…</div>
     </div>
-{:else if auth.phase !== 'authenticated' || isPublicRoute(page.url.pathname)}
+{:else if !isAuthenticated || isPublicRoute(page.url.pathname)}
     {@render children()}
 {:else}
     <div class="flex min-h-screen bg-bg text-text">
@@ -149,6 +187,14 @@
                                     <path d="M8 2l5 2v4a6 6 0 01-5 6 6 6 0 01-5-6V4l5-2z"
                                         stroke-linecap="round" stroke-linejoin="round" />
                                 </svg>
+                            {:else if link.icon === 'parental'}
+                                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                                    stroke-width="1.5" class="h-4 w-4">
+                                    <circle cx="5" cy="5" r="2" />
+                                    <circle cx="11" cy="5" r="2" />
+                                    <path d="M2 13c0-1.66 1.79-3 3.5-3 .83 0 1.59.31 2.16.82M14 13c0-1.66-1.79-3-3.5-3-.83 0-1.59.31-2.16.82"
+                                        stroke-linecap="round" />
+                                </svg>
                             {:else}
                                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
                                     stroke-width="1.5" class="h-4 w-4">
@@ -167,10 +213,10 @@
             <div class="mt-auto flex flex-col gap-3 pt-6">
                 <div class="rounded-md border border-border bg-surface-2 px-3 py-2.5">
                     <div class="truncate text-xs font-medium text-text">
-                        {auth.user!.display_name || auth.user!.email}
+                        {sidebarPrimary}
                     </div>
                     <div class="truncate text-[11px] text-text-dim">
-                        {auth.user!.email}
+                        {sidebarSecondary}
                     </div>
                 </div>
                 <button type="button" onclick={requestLogout} class="btn-ghost w-full justify-start">

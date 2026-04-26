@@ -105,6 +105,9 @@ pub fn run() {
             commands::set_adult_filter_enabled,
             commands::get_blocking_status,
             commands::install_ca_root,
+            commands::save_child_session,
+            commands::load_child_session,
+            commands::clear_child_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
