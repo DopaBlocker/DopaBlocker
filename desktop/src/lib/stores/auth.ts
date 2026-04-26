@@ -155,12 +155,21 @@ function createAuthStore() {
         // `authSyncVersion`.
         void hydrateFromChildSession();
 
-        onAuthChange((fbUser) => {
-            // Filho não toca Firebase — se já restauramos child_session,
-            // ignoramos eventos do Firebase SDK.
-            if (snapshot.phase === 'child_session') return;
-            void hydrateFromFirebase(fbUser);
-        });
+        try {
+            onAuthChange((fbUser) => {
+                // Filho não toca Firebase — se já restauramos child_session,
+                // ignoramos eventos do Firebase SDK.
+                if (snapshot.phase === 'child_session') return;
+                void hydrateFromFirebase(fbUser);
+            });
+        } catch (err) {
+            commit({
+                phase: 'signed_out',
+                user: null,
+                firebase_user: null,
+                error: friendly(err),
+            });
+        }
     }
 
     async function hydrateFromChildSession() {
