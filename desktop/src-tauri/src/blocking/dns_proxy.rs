@@ -30,12 +30,14 @@ use super::{
 };
 
 const DEFAULT_PORT: u16 = 53;
+const BLOCK_REDIRECT_TTL_SECS: u32 = 5;
 const MAX_DNS_PACKET: usize = 4096;
 const MAX_TCP_MSG: usize = 65_535;
 
 pub async fn run(
     rules: Arc<RwLock<HashSet<String>>>,
     adult: Arc<AdultFilter>,
+    cache: DnsCache,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
     let port: u16 = std::env::var("DOPABLOCKER_DNS_PORT")
@@ -47,7 +49,6 @@ pub async fn run(
     let udp_sockets = bind_udp_sockets(&addrs).await?;
     let tcp_listeners = bind_tcp_listeners(&addrs).await?;
 
-    let cache = DnsCache::new();
     let upstream = UpstreamPool::default_cloudflare_google();
     let mut shutdown = shutdown;
     let mut tasks = JoinSet::new();
@@ -328,7 +329,11 @@ fn build_block_redirect(query_msg: &Message) -> Result<Vec<u8>> {
 
     match qtype {
         RecordType::A => {
-            let record = Record::from_rdata(qname, 60, RData::A(A(Ipv4Addr::LOCALHOST)));
+            let record = Record::from_rdata(
+                qname,
+                BLOCK_REDIRECT_TTL_SECS,
+                RData::A(A(Ipv4Addr::LOCALHOST)),
+            );
             response.add_answer(record);
         }
         RecordType::AAAA => {}
@@ -343,6 +348,7 @@ fn build_block_redirect(query_msg: &Message) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hickory_proto::{op::Query, rr::Name};
     use std::net::IpAddr;
 
     #[test]
@@ -351,5 +357,20 @@ mod tests {
         assert_eq!(addrs.len(), 2);
         assert_eq!(addrs[0].ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
         assert_eq!(addrs[1].ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn block_redirect_uses_short_ttl() {
+        let mut query = Message::new();
+        query.add_query(Query::query(
+            Name::from_ascii("instagram.com.").unwrap(),
+            RecordType::A,
+        ));
+
+        let bytes = build_block_redirect(&query).unwrap();
+        let response = Message::from_vec(&bytes).unwrap();
+
+        assert_eq!(response.answers().len(), 1);
+        assert_eq!(response.answers()[0].ttl(), 5);
     }
 }

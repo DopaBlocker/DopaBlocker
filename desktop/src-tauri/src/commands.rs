@@ -219,7 +219,7 @@ pub async fn set_blocking_enabled(
         // primeiro, haveria uma janela de segundos em que o sistema ainda
         // aponta pra 127.0.0.1:53 mas ninguém está escutando → DNS quebrado.
         if let Err(e) = system_dns::restore_if_any(&conn).await {
-            tracing::warn!(error = %e, "falha ao restaurar DNS — seguindo pra parar engine");
+            tracing::error!(error = %e, "falha ao restaurar DNS — seguindo pra parar engine");
         }
         let mut eng = engine.lock().await;
         eng.stop().await;

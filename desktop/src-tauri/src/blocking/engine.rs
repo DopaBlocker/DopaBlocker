@@ -19,7 +19,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use super::{adult_filter::AdultFilter, block_page, ca::LocalCa, dns_proxy};
+use super::{adult_filter::AdultFilter, block_page, ca::LocalCa, dns_cache::DnsCache, dns_proxy};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -32,6 +32,7 @@ pub enum EngineError {
 pub struct Engine {
     rules: Arc<RwLock<HashSet<String>>>,
     adult_filter: Arc<AdultFilter>,
+    dns_cache: DnsCache,
     app_data_dir: PathBuf,
     dns_task: Option<JoinHandle<()>>,
     dns_shutdown: Option<oneshot::Sender<()>>,
@@ -48,6 +49,7 @@ impl Engine {
         Self {
             rules: Arc::new(RwLock::new(HashSet::new())),
             adult_filter,
+            dns_cache: DnsCache::new(),
             app_data_dir,
             dns_task: None,
             dns_shutdown: None,
@@ -74,6 +76,7 @@ impl Engine {
             w.clear();
             w.extend(initial_rules);
         }
+        self.dns_cache.clear().await;
 
         let ca = match LocalCa::load_or_create(&self.app_data_dir) {
             Ok(ca) => {
@@ -126,8 +129,9 @@ impl Engine {
         let (dns_tx, dns_rx) = oneshot::channel();
         let rules = self.rules.clone();
         let adult = self.adult_filter.clone();
+        let cache = self.dns_cache.clone();
         let dns_task = tokio::spawn(async move {
-            match dns_proxy::run(rules, adult, dns_rx).await {
+            match dns_proxy::run(rules, adult, cache, dns_rx).await {
                 Ok(()) => tracing::info!("DNS proxy encerrado normalmente"),
                 Err(e) => tracing::error!(error = %e, "DNS proxy morreu"),
             }
@@ -183,8 +187,11 @@ impl Engine {
     }
 
     pub async fn update_rules(&self, new_rules: Vec<String>) {
-        let mut w = self.rules.write().await;
-        w.clear();
-        w.extend(new_rules);
+        {
+            let mut w = self.rules.write().await;
+            w.clear();
+            w.extend(new_rules);
+        }
+        self.dns_cache.clear().await;
     }
 }

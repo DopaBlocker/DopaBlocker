@@ -86,6 +86,111 @@ pub async fn restore_if_any(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Self-heal: detecta interfaces que ainda estao apontando para `127.0.0.1`
+/// (zumbi de algum run anterior que crashou) e forca de volta para DHCP.
+///
+/// Chamada na inicializacao do app, ANTES de qualquer logica de bloqueio.
+/// Garante que mesmo um snapshot perdido no DB nao impede o app de se
+/// recuperar — basta abrir o app uma vez.
+///
+/// Diferente do `restore_if_any`, nao depende de snapshot persistido — olha
+/// o estado atual do sistema. Se nada estiver orfao, e no-op silencioso.
+pub async fn heal_orphan_dns() -> Result<()> {
+    if !cfg!(target_os = "windows") {
+        return Ok(());
+    }
+
+    // Faz a captura RAW (sem filtrar) para ver todas as interfaces, inclusive
+    // as que parse_dnsservers_output_for_family pula.
+    let ipv4 = netsh(&["interface", "ipv4", "show", "dnsservers"]).await?;
+    let ipv6 = netsh(&["interface", "ipv6", "show", "dnsservers"]).await?;
+    let mut all = parse_raw_for_family(&ipv4, DnsFamily::V4);
+    all.extend(parse_raw_for_family(&ipv6, DnsFamily::V6));
+
+    let mut healed = 0;
+    for cfg in &all {
+        let lower = cfg.name.to_lowercase();
+        if lower.contains("loopback") {
+            continue;
+        }
+        if cfg.source != DnsSource::Static {
+            continue;
+        }
+        if cfg.servers.is_empty() || !cfg.servers.iter().all(|ip| is_loopback(ip)) {
+            continue;
+        }
+        // Encontrado: interface estatica apontando so pra loopback.
+        // Forca DHCP — recupera os DNS reais do roteador automaticamente.
+        match set_dhcp(cfg.family, &cfg.name).await {
+            Ok(()) => {
+                healed += 1;
+                tracing::error!(
+                    interface = %cfg.name,
+                    family = ?cfg.family,
+                    "self-heal: DNS orfao em loopback, forcado DHCP"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    interface = %cfg.name,
+                    family = ?cfg.family,
+                    error = %e,
+                    "self-heal: falha ao forcar DHCP — usuario pode precisar resetar manualmente"
+                );
+            }
+        }
+    }
+
+    if healed > 0 {
+        flush_resolver_cache().await;
+    }
+    Ok(())
+}
+
+/// Versao do parser que NAO filtra loopback — usado so pelo `heal_orphan_dns`,
+/// porque para self-heal a gente *quer* ver as interfaces com loopback.
+fn parse_raw_for_family(text: &str, family: DnsFamily) -> Vec<InterfaceDnsConfig> {
+    let mut out = Vec::new();
+    let mut current: Option<InterfaceDnsConfig> = None;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = extract_quoted_name(trimmed) {
+            if let Some(prev) = current.take() {
+                let lower = prev.name.to_lowercase();
+                if !lower.contains("loopback") {
+                    out.push(prev);
+                }
+            }
+            current = Some(InterfaceDnsConfig {
+                name,
+                family,
+                source: DnsSource::Static,
+                servers: Vec::new(),
+            });
+            continue;
+        }
+
+        let Some(cfg) = current.as_mut() else {
+            continue;
+        };
+        if trimmed.to_lowercase().contains("dhcp") {
+            cfg.source = DnsSource::Dhcp;
+        }
+        if let Some(ip) = extract_ip(trimmed, family) {
+            cfg.servers.push(ip);
+        }
+    }
+
+    if let Some(last) = current.take() {
+        let lower = last.name.to_lowercase();
+        if !lower.contains("loopback") {
+            out.push(last);
+        }
+    }
+    out
+}
+
 // -------- capture ----------------------------------------------------------
 
 pub async fn capture_current() -> Result<Vec<InterfaceDnsConfig>> {
@@ -144,7 +249,7 @@ pub async fn apply_proxy_dns(interfaces: &[InterfaceDnsConfig]) -> Result<()> {
 pub async fn restore_all(configs: &[InterfaceDnsConfig]) {
     for cfg in configs {
         if let Err(e) = restore_one(cfg).await {
-            tracing::warn!(
+            tracing::error!(
                 interface = %cfg.name,
                 family = ?cfg.family,
                 error = %e,
@@ -342,7 +447,34 @@ fn push_if_usable(out: &mut Vec<InterfaceDnsConfig>, cfg: InterfaceDnsConfig) {
     if lower.contains("loopback") {
         return;
     }
+    // Defesa contra "DNS órfão" (cenário recorrente reportado): se a interface
+    // ja esta apontando para 127.0.0.1 ou ::1, isso significa que outro
+    // (ou nos mesmos, em estado zumbi) ja redirecionou. NAO podemos salvar
+    // isso como "DNS original do usuario" — se salvarmos, o restore vai
+    // "voltar" para 127.0.0.1 e o sistema fica permanentemente quebrado.
+    //
+    // Filtramos so quando a config for `Static` apontando para loopback —
+    // se for DHCP com loopback nos servers (caso teorico, raro), preservamos
+    // pois `set_dhcp` vai descartar os servers atuais.
+    if cfg.source == DnsSource::Static
+        && !cfg.servers.is_empty()
+        && cfg.servers.iter().all(|ip| is_loopback(ip))
+    {
+        tracing::warn!(
+            interface = %cfg.name,
+            family = ?cfg.family,
+            "ignorando interface — DNS atual aponta para loopback (estado orfao?)"
+        );
+        return;
+    }
     out.push(cfg);
+}
+
+fn is_loopback(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => v6.is_loopback(),
+    }
 }
 
 #[cfg(test)]
@@ -407,6 +539,38 @@ Configuracao para interface "Wi-Fi"
             Some("Wi-Fi".to_string())
         );
         assert_eq!(extract_quoted_name("no quotes here"), None);
+    }
+
+    #[test]
+    fn ignores_interface_with_loopback_dns() {
+        // Cenario zumbi: o sistema ja esta apontando pra 127.0.0.1 (algum
+        // run anterior crashou sem cleanup). Nao podemos persistir isso
+        // como "DNS original" — senao o restore quebra a maquina.
+        let sample = r#"
+Configuration for interface "Wi-Fi"
+    Statically Configured DNS Servers:    127.0.0.1
+    Register with which suffix:           Primary only
+"#;
+        let cfgs = parse_dnsservers_output(sample);
+        assert!(
+            cfgs.is_empty(),
+            "interface com DNS=loopback estatico deve ser ignorada (cfgs={cfgs:?})"
+        );
+    }
+
+    #[test]
+    fn keeps_interface_with_loopback_via_dhcp() {
+        // Caso teorico — mantem a config DHCP mesmo com loopback nos servers,
+        // porque set_dhcp descarta os servers atuais (vai puxar fresh do
+        // proximo lease).
+        let sample = r#"
+Configuration for interface "Wi-Fi"
+    DNS servers configured through DHCP:  127.0.0.1
+    Register with which suffix:           Primary only
+"#;
+        let cfgs = parse_dnsservers_output(sample);
+        assert_eq!(cfgs.len(), 1);
+        assert_eq!(cfgs[0].source, DnsSource::Dhcp);
     }
 
     #[test]

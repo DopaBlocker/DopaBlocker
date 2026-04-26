@@ -130,6 +130,10 @@ impl DnsCache {
         map.insert(key, entry);
     }
 
+    pub async fn clear(&self) {
+        self.inner.write().await.clear();
+    }
+
     fn evict(map: &mut HashMap<Key, Entry>) {
         let now = Instant::now();
         map.retain(|_, e| e.expires_at > now);
@@ -174,4 +178,51 @@ fn with_id(bytes: &[u8], new_id: u16) -> Vec<u8> {
         out[1] = id_bytes[1];
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    use hickory_proto::{
+        op::{Message, MessageType, Query},
+        rr::{rdata::A, Name, RData, Record, RecordType},
+        serialize::binary::BinEncodable,
+    };
+
+    fn a_query(name: &str, id: u16) -> Message {
+        let mut msg = Message::new();
+        msg.set_id(id);
+        msg.add_query(Query::query(Name::from_ascii(name).unwrap(), RecordType::A));
+        msg
+    }
+
+    fn a_response(query: &Message) -> Vec<u8> {
+        let query = query.queries().first().unwrap().clone();
+        let mut response = Message::new();
+        response.set_id(42);
+        response.set_message_type(MessageType::Response);
+        response.add_query(query.clone());
+        response.add_answer(Record::from_rdata(
+            query.name().clone(),
+            30,
+            RData::A(A(Ipv4Addr::new(93, 184, 216, 34))),
+        ));
+        response.to_bytes().unwrap()
+    }
+
+    #[tokio::test]
+    async fn clear_removes_cached_response() {
+        let cache = DnsCache::new();
+        let query = a_query("example.com.", 1);
+        let response = a_response(&query);
+
+        cache.put(&query, &response).await;
+        assert!(cache.get(&query, 2).await.is_some());
+
+        cache.clear().await;
+
+        assert!(cache.get(&query, 3).await.is_none());
+    }
 }
