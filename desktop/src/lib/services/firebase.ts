@@ -84,9 +84,9 @@ export async function signOutCurrent(): Promise<void> {
     await signOut(getFirebaseAuth());
 }
 
-/// Dispara o email "reset de senha" do Firebase. O usuario clica no link,
-/// define a nova senha numa pagina hospedada pelo Firebase, e depois volta
-/// ao app para fazer login com a nova senha. Backend nao precisa saber.
+/// Dispara o email "reset de senha" do Firebase. O usuário clica no link,
+/// define a nova senha numa página hospedada pelo Firebase, e depois volta
+/// ao app para fazer login com a nova senha. Backend não precisa saber.
 export async function sendPasswordReset(email: string): Promise<void> {
     await sendPasswordResetEmail(getFirebaseAuth(), email);
 }
@@ -95,13 +95,13 @@ export async function sendPasswordReset(email: string): Promise<void> {
 /// `api.deleteAccount()` ANTES — o backend usa o JWT do user (que expira
 /// junto com o user) para autorizar.
 ///
-/// Pode falhar com `auth/requires-recent-login` se o ultimo login foi ha
-/// muito tempo (politica do Firebase). O caller deve capturar e pedir
+/// Pode falhar com `auth/requires-recent-login` se o último login foi há
+/// muito tempo (política do Firebase). O caller deve capturar e pedir
 /// reauth.
 export async function deleteCurrentUser(): Promise<void> {
     const user = getFirebaseAuth().currentUser;
     if (!user) {
-        throw new Error('Nao ha usuario Firebase autenticado.');
+        throw new Error('Não há usuário Firebase autenticado.');
     }
     await deleteUser(user);
 }

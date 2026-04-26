@@ -52,8 +52,8 @@
         return PUBLIC_ROUTES.some((r) => path === r || path.startsWith(r + '/'));
     }
 
-    // Conta autenticada cobre tanto sessao Firebase (Pessoal/Pais) quanto
-    // sessao de filho (sem Firebase, com Device Token).
+    // Conta autenticada cobre tanto sessão Firebase (Pessoal/Pais) quanto
+    // sessão de filho (sem Firebase, com Device Token).
     const isAuthenticated = $derived(
         auth.phase === 'authenticated' || auth.phase === 'child_session',
     );
@@ -66,8 +66,8 @@
         const publicRoute = isPublicRoute(path);
 
         if (isChild) {
-            // Sessao de filho fica AMARRADA em /child-blocked — sem dashboard,
-            // sem /blocking, sem nada. So a tela "Bloqueado".
+            // Sessão de filho fica AMARRADA em /child-blocked — sem dashboard,
+            // sem /blocking, sem nada. Só a tela "Bloqueado".
             if (path !== CHILD_ROUTE) {
                 goto(CHILD_ROUTE, { replaceState: true });
             }
@@ -75,7 +75,7 @@
         }
 
         if (auth.phase === 'authenticated') {
-            // Firebase: bloqueia rotas publicas e a rota de filho.
+            // Firebase: bloqueia rotas públicas e a rota de filho.
             if (publicRoute || path === CHILD_ROUTE) {
                 goto('/', { replaceState: true });
             }
@@ -83,7 +83,7 @@
         }
 
         // signed_out / qualquer outro estado terminal: redireciona pra /welcome
-        // exceto se ja esta numa rota publica (incluindo /child-blocked, que
+        // exceto se já está numa rota pública (incluindo /child-blocked, que
         // pode aparecer brevemente antes do logout do filho propagar).
         if (!publicRoute && path !== CHILD_ROUTE) {
             goto('/welcome', { replaceState: true });
@@ -116,7 +116,7 @@
         return path === href || path.startsWith(href + '/');
     }
 
-    // Texto exibido no card da sidebar — varia entre sessao Firebase e child.
+    // Texto exibido no card da sidebar — varia entre sessão Firebase e child.
     const sidebarPrimary = $derived(
         isChild
             ? 'Dispositivo vinculado'

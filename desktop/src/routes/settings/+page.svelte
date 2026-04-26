@@ -41,20 +41,20 @@
     }
 
     /// Ordem importa: Firebase primeiro (porque pode falhar com
-    /// `auth/requires-recent-login` antes de mexer no backend), so depois
-    /// o backend, so depois logout local. Se o Firebase OK mas o backend
-    /// falhar, ficamos com Firebase apagado e backend orfao — log de erro
-    /// e seguimos para o logout. O orfao morre quando o user tentar logar
+    /// `auth/requires-recent-login` antes de mexer no backend), só depois
+    /// o backend, só depois logout local. Se o Firebase OK mas o backend
+    /// falhar, ficamos com Firebase apagado e backend órfão — log de erro
+    /// e seguimos para o logout. O órfão morre quando o user tentar logar
     /// (auth/login retorna 404 → re-cadastro).
     async function handleDeleteAccount() {
         await deleteCurrentUser();
         try {
             await api.deleteAccount();
         } catch (err) {
-            console.warn('Backend delete falhou apos Firebase deletar:', err);
+            console.warn('Backend delete falhou após Firebase deletar:', err);
         }
         await authStore.logout();
-        toast.info('Conta excluida.');
+        toast.info('Conta excluída.');
         await goto('/welcome');
     }
 

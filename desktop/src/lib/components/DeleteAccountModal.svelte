@@ -1,15 +1,15 @@
 <!--
-  Modal de exclusao de conta com dupla confirmacao.
+  Modal de exclusão de conta com dupla confirmação.
 
   Fluxo:
     1. step="confirm"     — pergunta "Tem certeza?"; se sim, vai para "type".
-    2. step="type"        — pede o usuario digitar "EXCLUIR" para habilitar
-                            o botao final.
-    3. step="reauth"      — exibido se o Firebase exigir reautenticacao
-                            (`auth/requires-recent-login`). Botao desloga e
+    2. step="type"        — pede o usuário digitar "EXCLUIR" para habilitar
+                            o botão final.
+    3. step="reauth"      — exibido se o Firebase exigir reautenticação
+                            (`auth/requires-recent-login`). Botão desloga e
                             joga em /welcome para o user logar de novo.
 
-  O componente nao executa a exclusao em si — recebe um `onconfirm` que o
+  O componente não executa a exclusão em si — recebe um `onconfirm` que o
   caller (settings/+page.svelte) usa para orquestrar Firebase + backend +
   logout.
 -->
@@ -19,11 +19,11 @@
     interface Props {
         open: boolean;
         onclose: () => void;
-        /** Disparado quando o usuario digita EXCLUIR e clica no botao final.
+        /** Disparado quando o usuário digita EXCLUIR e clica no botão final.
          *  Espera-se que rejeite com `code === 'auth/requires-recent-login'`
          *  quando o Firebase exigir relogin. */
         onconfirm: () => Promise<void>;
-        /** Disparado quando o usuario clica em "Fazer login de novo" no
+        /** Disparado quando o usuário clica em "Fazer login de novo" no
          *  step de reauth. O caller deve fazer logout + navegar pra /welcome. */
         onreauth: () => void;
     }
@@ -59,7 +59,7 @@
         try {
             await onconfirm();
             reset();
-            // Caller redireciona — nao precisa fechar manualmente.
+            // Caller redireciona — não precisa fechar manualmente.
         } catch (err) {
             const code = (err as { code?: string }).code;
             if (code === 'auth/requires-recent-login') {
@@ -82,7 +82,7 @@
     <Modal
         {open}
         title="Excluir conta?"
-        description="Esta acao remove tudo permanentemente: sua conta, todos os bloqueios e qualquer filho vinculado. Nao da para desfazer."
+        description="Esta ação remove tudo permanentemente: sua conta, todos os bloqueios e qualquer filho vinculado. Não dá para desfazer."
         onclose={handleClose}
     >
         <div class="flex justify-end gap-2">
@@ -102,7 +102,7 @@
     <Modal
         {open}
         title="Confirme digitando"
-        description={`Digite ${REQUIRED_TEXT} abaixo para confirmar a exclusao.`}
+        description={`Digite ${REQUIRED_TEXT} abaixo para confirmar a exclusão.`}
         onclose={handleClose}
     >
         <div class="flex flex-col gap-4">
@@ -141,8 +141,8 @@
 {:else}
     <Modal
         {open}
-        title="Sessao antiga"
-        description="Por seguranca, o Firebase exige que voce tenha entrado recentemente para excluir a conta. Faca login de novo e tente outra vez."
+        title="Sessão antiga"
+        description="Por segurança, o Firebase exige que você tenha entrado recentemente para excluir a conta. Faça login de novo e tente outra vez."
         onclose={handleClose}
     >
         <div class="flex justify-end gap-2">

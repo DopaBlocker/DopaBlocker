@@ -1,19 +1,19 @@
 <!--
-  Input de codigo de 6 digitos para o fluxo "Filhos".
+  Input de código de 6 dígitos para o fluxo "Filhos".
 
-  - 6 inputs separados, cada um aceita 1 digito.
+  - 6 inputs separados, cada um aceita 1 dígito.
   - Auto-advance: digitar avanca o foco; Backspace volta.
-  - Suporta paste do codigo inteiro (`onpaste` distribui dígitos por todos os
+  - Suporta paste do código inteiro (`onpaste` distribui dígitos por todos os
     inputs).
   - Valida e dispara `onsubmit` automaticamente quando os 6 ficam preenchidos.
 
-  Esse componente e UI pura — sem chamada ao backend nem ao auth store. Quem
-  chama (rota `/onboarding/child`) recebe o codigo no callback e lida com a
-  request, exibicao de erro, etc. Mantem o componente reutilizavel.
+  Esse componente é UI pura — sem chamada ao backend nem ao auth store. Quem
+  chama (rota `/onboarding/child`) recebe o código no callback e lida com a
+  request, exibição de erro, etc. Mantém o componente reutilizável.
 -->
 <script lang="ts">
     interface Props {
-        /** Disparado quando os 6 digitos sao preenchidos. */
+        /** Disparado quando os 6 dígitos são preenchidos. */
         onsubmit: (code: string) => void;
         /** True desabilita os inputs (ex: durante a request). */
         disabled?: boolean;
@@ -93,7 +93,7 @@
                 {disabled}
                 oninput={(e) => handleInput(i, e)}
                 onkeydown={(e) => handleKeydown(i, e)}
-                aria-label={`Digito ${i + 1} do codigo`}
+                aria-label={`Dígito ${i + 1} do código`}
                 class="h-12 w-10 rounded-md border border-border bg-surface text-center text-lg font-semibold text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-50"
             />
         {/each}

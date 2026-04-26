@@ -13,8 +13,8 @@
     type SignupStep = 'form' | 'verify';
 
     interface Props {
-        /** Vem da URL (`?mode=personal` ou `?mode=parental`). Filhos nao
-         *  passam por aqui — vao direto para /onboarding/child. */
+        /** Vem da URL (`?mode=personal` ou `?mode=parental`). Filhos não
+         *  passam por aqui — vão direto para /onboarding/child. */
         mode: 'personal' | 'parental';
     }
 
@@ -72,14 +72,14 @@
                 password = '';
                 confirmPassword = '';
                 infoMessage =
-                    'Sua conta ja entrou no Firebase. Falta concluir o cadastro local para entrar no app.';
+                    'Sua conta já entrou no Firebase. Falta concluir o cadastro local para entrar no app.';
                 formError = state.error;
                 return;
             }
 
             if (state.phase === 'backend_unavailable') {
                 infoMessage =
-                    'O Firebase autenticou, mas o backend local nao respondeu. Tente sincronizar novamente.';
+                    'O Firebase autenticou, mas o backend local não respondeu. Tente sincronizar novamente.';
                 formError = state.error;
                 return;
             }
@@ -174,25 +174,25 @@
 
         const target = email.trim();
         if (!target) {
-            formError = 'Digite seu email para receber o link de redefinicao.';
+            formError = 'Digite seu email para receber o link de redefinição.';
             return;
         }
 
         submitting = true;
         try {
             await sendPasswordReset(target);
-            infoMessage = `Enviamos um link de redefinicao para ${target}. Confira sua caixa de entrada.`;
+            infoMessage = `Enviamos um link de redefinição para ${target}. Confira sua caixa de entrada.`;
         } catch (err) {
-            // Por seguranca, o Firebase nao distingue email inexistente — qualquer
-            // erro vira a mensagem generica. Logamos no console para debug local.
+            // Por segurança, o Firebase não distingue email inexistente — qualquer
+            // erro vira a mensagem genérica. Logamos no console para debug local.
             console.warn('sendPasswordReset', err);
             const code = (err as { code?: string }).code;
             if (code === 'auth/invalid-email') {
-                formError = 'Email invalido.';
+                formError = 'Email inválido.';
             } else if (code === 'auth/network-request-failed') {
-                formError = 'Sem conexao com a internet.';
+                formError = 'Sem conexão com a internet.';
             } else {
-                infoMessage = `Se ${target} estiver cadastrado, voce recebera um email com o link.`;
+                infoMessage = `Se ${target} estiver cadastrado, você receberá um email com o link.`;
             }
         } finally {
             submitting = false;
@@ -220,7 +220,7 @@
         const mail = firebaseIdentity?.email || email.trim();
 
         if (!mail) {
-            formError = 'Nao conseguimos ler o email da sua sessao. Entre novamente.';
+            formError = 'Não conseguimos ler o email da sua sessão. Entre novamente.';
             return null;
         }
 
@@ -245,20 +245,20 @@
         }
 
         if (!pendingLocalRegistration && password !== confirmPassword) {
-            formError = 'As senhas nao conferem.';
+            formError = 'As senhas não conferem.';
             return null;
         }
 
         return { mail, name };
     }
 
-    /// Inicia o cadastro: envia codigo de verificacao por email. O `mode` ja
-    /// vem da prop (escolhido em /welcome), entao nao precisamos mais de logica
-    /// de selecao aqui — basta validar o form, mandar codigo, ir para o step
-    /// de verificacao.
+    /// Inicia o cadastro: envia código de verificação por email. O `mode` já
+    /// vem da prop (escolhido em /welcome), então não precisamos mais de lógica
+    /// de seleção aqui — basta validar o form, mandar código, ir para o step
+    /// de verificação.
     ///
-    /// Para login Google ja autenticado mas sem registro local
-    /// (`pendingLocalRegistration`), pulamos o codigo: o email ja foi
+    /// Para login Google já autenticado mas sem registro local
+    /// (`pendingLocalRegistration`), pulamos o código: o email já foi
     /// verificado pelo Google.
     async function handleSignupSubmit(e: Event) {
         e.preventDefault();
@@ -268,7 +268,7 @@
         const identity = resolveSignupIdentity();
         if (!identity) return;
 
-        // Caminho Google → so falta criar o user local.
+        // Caminho Google → só falta criar o user local.
         if (pendingProviderSkipsCode) {
             submitting = true;
             try {
@@ -281,7 +281,7 @@
             return;
         }
 
-        // Caminho normal (email + senha) → manda codigo.
+        // Caminho normal (email + senha) → manda código.
         submitting = true;
         try {
             const response = await api.startEmailVerification({ email: identity.mail });
@@ -306,7 +306,7 @@
 
         const code = verificationCode.trim();
         if (!code) {
-            formError = 'Digite o codigo enviado por email.';
+            formError = 'Digite o código enviado por email.';
             return;
         }
 
@@ -342,7 +342,7 @@
     async function handleResendCode() {
         if (submitting || resendRemaining > 0) return;
         // Reaproveita o handler — joga em `signupStep='form'` virtualmente
-        // chamando o mesmo fluxo de envio de codigo (sem perder o codigo
+        // chamando o mesmo fluxo de envio de código (sem perder o código
         // digitado, mas resetando o cooldown).
         resetFeedback();
         const identity = resolveSignupIdentity();
@@ -394,7 +394,7 @@
         <div>
             <h1 class="text-lg font-semibold tracking-tight text-gradient">DopaBlocker</h1>
             <p class="mt-1 text-xs text-text-muted">
-                Bloqueie distracoes. Mantenha o foco.
+                Bloqueie distrações. Mantenha o foco.
             </p>
         </div>
     </div>
@@ -501,10 +501,10 @@
                 <div
                     class="rounded-md border border-secondary/50 bg-secondary/10 px-3 py-2 text-xs text-secondary"
                 >
-                    Codigo enviado para {verificationEmail || email.trim()}.
+                    Código enviado para {verificationEmail || email.trim()}.
                 </div>
                 <label class="flex flex-col gap-1.5">
-                    <span class="field-label">Codigo de verificacao</span>
+                    <span class="field-label">Código de verificação</span>
                     <input
                         type="text"
                         required
@@ -529,7 +529,7 @@
                     >
                         {resendRemaining > 0
                             ? `Reenviar em ${resendRemaining}s`
-                            : 'Reenviar codigo'}
+                            : 'Reenviar código'}
                     </button>
                     <button
                         type="button"
@@ -545,7 +545,7 @@
                     <div
                         class="rounded-md border border-secondary/50 bg-secondary/10 px-3 py-2 text-xs text-secondary"
                     >
-                        Seu login Firebase ja esta pronto. Falta criar o registro local desta maquina.
+                        Seu login Firebase já está pronto. Falta criar o registro local desta máquina.
                     </div>
                 {/if}
 
@@ -583,7 +583,7 @@
                             autocomplete="new-password"
                             bind:value={password}
                             class="input"
-                            placeholder="Minimo 6 caracteres"
+                            placeholder="Mínimo 6 caracteres"
                         />
                     </label>
                     <label class="flex flex-col gap-1.5">
@@ -643,7 +643,7 @@
             disabled={submitting}
             class="btn-ghost mt-3 w-full justify-center"
         >
-            {submitting ? 'Limpando sessao...' : 'Entrar com outra conta'}
+            {submitting ? 'Limpando sessão...' : 'Entrar com outra conta'}
         </button>
     {/if}
 

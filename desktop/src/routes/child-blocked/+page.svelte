@@ -1,12 +1,12 @@
 <!--
   Tela exibida quando o auth.phase === 'child_session'. Minimal por design:
-  o filho nao deve ter onde clicar nem o que ler alem do essencial.
+  o filho não deve ter onde clicar nem o que ler além do essencial.
 
-  Faz polling a cada 30s para detectar revogacao do pai. Em 401, dispara
+  Faz polling a cada 30s para detectar revogação do pai. Em 401, dispara
   logout — o `+layout.svelte` redireciona automaticamente para /welcome
   quando phase passa a `signed_out`.
 
-  O DNS proxy continua rodando em background; o bloqueio efetivo nao depende
+  O DNS proxy continua rodando em background; o bloqueio efetivo não depende
   desta tela estar aberta.
 -->
 <script lang="ts">
@@ -22,7 +22,7 @@
 
     async function checkRevoked() {
         try {
-            // /blocklist e a rota mais barata aceita por Device Token. Se
+            // /blocklist é a rota mais barata aceita por Device Token. Se
             // o pai revogou, vem 401 e o ApiError propaga.
             await api.listBlocklist();
         } catch (err) {
@@ -30,7 +30,7 @@
                 // Limpa SQLCipher + atualiza store. O layout redireciona.
                 await authStore.logout();
             }
-            // Outros erros (rede, 5xx) — ignora; tenta de novo no proximo tick.
+            // Outros erros (rede, 5xx) — ignora; tenta de novo no próximo tick.
         }
     }
 
@@ -62,8 +62,8 @@
         <div class="flex flex-col gap-2">
             <h1 class="text-3xl font-semibold tracking-tight text-text">Bloqueado</h1>
             <p class="max-w-sm text-sm text-text-muted">
-                Este dispositivo esta vinculado a conta de um responsavel. O
-                bloqueio esta ativo em segundo plano.
+                Este dispositivo está vinculado à conta de um responsável. O
+                bloqueio está ativo em segundo plano.
             </p>
         </div>
     </div>

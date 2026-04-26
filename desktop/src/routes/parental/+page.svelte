@@ -1,10 +1,10 @@
 <!--
-  Tela do modo Pais. So acessivel quando auth.user.mode === 'parental'
-  (gating no +layout.svelte). Filhos sao redirecionados para `/`.
+  Tela do modo Pais. Só acessível quando auth.user.mode === 'parental'
+  (gating no +layout.svelte). Filhos são redirecionados para `/`.
 
-  Conteudo: gerar codigo de vinculacao + listar/desvincular filhos.
-  Adicionar/remover bloqueios e gerenciado em /blocking — a blocklist e
-  unica e propaga para todos os filhos.
+  Conteúdo: gerar código de vinculação + listar/desvincular filhos.
+  Adicionar/remover bloqueios é gerenciado em /blocking — a blocklist é
+  única e propaga para todos os filhos.
 -->
 <script lang="ts">
     import DeviceLinkCode from '$lib/components/DeviceLinkCode.svelte';
@@ -19,7 +19,7 @@
         </h1>
         <p class="mt-1 text-sm text-text-muted">
             A blocklist da sua conta vale para todos os dispositivos filhos
-            vinculados — voce mesmo (este dispositivo) nao recebe os bloqueios.
+            vinculados — você mesmo (este dispositivo) não recebe os bloqueios.
         </p>
     </header>
 

@@ -1,12 +1,12 @@
 <!--
-  Tela de boas-vindas — primeira coisa que o usuario ve quando abre o app sem
-  sessao. Tres cards full-screen:
+  Tela de boas-vindas — primeira coisa que o usuário vê quando abre o app sem
+  sessão. Três cards full-screen:
     - Pessoal → /login?mode=personal
     - Pais    → /login?mode=parental
     - Filhos  → /onboarding/child   (sem login)
 
-  Sem ModeSelector embutido em formulario de signup; aqui a escolha vem ANTES
-  de qualquer credencial. Logica de auth vive em /login (Pessoal/Pais) ou
+  Sem ModeSelector embutido em formulário de signup; aqui a escolha vem ANTES
+  de qualquer credencial. Lógica de auth vive em /login (Pessoal/Pais) ou
   /onboarding/child (Filhos).
 -->
 <script lang="ts">
@@ -26,21 +26,21 @@
             mode: 'personal',
             label: 'Pessoal',
             description:
-                'Bloqueie seus proprios sites e apps. Uma unica conta, uso individual.',
+                'Bloqueie seus próprios sites e apps. Uma única conta, uso individual.',
             icon: 'user',
         },
         {
             mode: 'parental',
             label: 'Pais',
             description:
-                'Gere um codigo de vinculacao e controle os bloqueios dos dispositivos dos seus filhos.',
+                'Gere um código de vinculação e controle os bloqueios dos dispositivos dos seus filhos.',
             icon: 'parental',
         },
         {
             mode: 'child',
             label: 'Filhos',
             description:
-                'Vincule este dispositivo a uma conta de responsavel digitando o codigo de 6 digitos.',
+                'Vincule este dispositivo a uma conta de responsável digitando o código de 6 dígitos.',
             icon: 'child',
         },
     ];
@@ -69,7 +69,7 @@
                     DopaBlocker
                 </h1>
                 <p class="mt-2 text-sm text-text-muted">
-                    Como voce vai usar o app neste dispositivo?
+                    Como você vai usar o app neste dispositivo?
                 </p>
             </div>
         </div>
@@ -120,7 +120,7 @@
         </div>
 
         <p class="mt-8 text-center text-[11px] text-text-dim">
-            Voce pode trocar de modo depois saindo da conta nas Configuracoes.
+            Você pode trocar de modo depois saindo da conta nas Configurações.
         </p>
     </div>
 </div>

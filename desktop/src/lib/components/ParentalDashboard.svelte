@@ -1,9 +1,9 @@
 <!--
-  Dashboard do modo parental — visao do pai. Lista os filhos vinculados
+  Dashboard do modo parental — visão do pai. Lista os filhos vinculados
   (devices com is_child=true) e permite revogar cada um.
 
-  A geracao de codigo de vinculacao fica em DeviceLinkCode.svelte (componente
-  separado) — esta tela e so leitura + revogacao.
+  A geração de código de vinculação fica em DeviceLinkCode.svelte (componente
+  separado) — esta tela é só leitura + revogação.
 -->
 <script lang="ts">
     import { onMount } from 'svelte';
@@ -19,7 +19,7 @@
         loading = true;
         try {
             const all = await api.listDevices();
-            // Pai so quer ver os filhos aqui — devices proprios do pai
+            // Pai só quer ver os filhos aqui — devices próprios do pai
             // aparecem em /settings.
             devices = all.filter((d) => d.is_child);
         } catch (err) {
@@ -56,11 +56,11 @@
         const diff = Math.max(0, now - then);
         const min = Math.floor(diff / 60000);
         if (min < 1) return 'agora';
-        if (min < 60) return `${min} min atras`;
+        if (min < 60) return `${min} min atrás`;
         const hr = Math.floor(min / 60);
-        if (hr < 24) return `${hr} h atras`;
+        if (hr < 24) return `${hr} h atrás`;
         const d = Math.floor(hr / 24);
-        return `${d} d atras`;
+        return `${d} d atrás`;
     }
 
     onMount(reload);
@@ -78,7 +78,7 @@
         <div class="card-padded text-center text-xs text-text-muted">Carregando…</div>
     {:else if devices.length === 0}
         <div class="card-padded text-center text-xs text-text-muted">
-            Nenhum filho vinculado ainda. Gere um codigo acima e peca para o
+            Nenhum filho vinculado ainda. Gere um código acima e peça para o
             filho digitar no app dele.
         </div>
     {:else}

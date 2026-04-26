@@ -57,7 +57,7 @@ export function getBlockingStatus(userId: string): Promise<BlockingStatus> {
     return invoke<BlockingStatus>('get_blocking_status', { userId });
 }
 
-// ---- child_session (sessao de filho persistida em SQLCipher) ----
+// ---- child_session (sessão de filho persistida em SQLCipher) ----
 
 export function saveChildSession(session: ChildSession): Promise<void> {
     return invoke<void>('save_child_session', {

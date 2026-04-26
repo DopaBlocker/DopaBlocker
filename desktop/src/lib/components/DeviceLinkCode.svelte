@@ -1,7 +1,7 @@
 <!--
-  Botao "Gerar codigo de vinculacao" + display do codigo de 6 digitos com
-  countdown ate o `expires_at`. So existe no modo pai — o filho usa o
-  componente irmao `ChildCodeInput.svelte` para INSERIR o codigo.
+  Botão "Gerar código de vinculação" + display do código de 6 dígitos com
+  countdown até o `expires_at`. Só existe no modo pai — o filho usa o
+  componente irmão `ChildCodeInput.svelte` para INSERIR o código.
 -->
 <script lang="ts">
     import { onDestroy } from 'svelte';
@@ -27,7 +27,7 @@
             updateRemaining();
             startTimer();
         } catch (err) {
-            toast.error(err instanceof ApiError ? err.message : 'Falha ao gerar codigo');
+            toast.error(err instanceof ApiError ? err.message : 'Falha ao gerar código');
         } finally {
             generating = false;
         }
@@ -47,7 +47,7 @@
         const ms = Math.max(0, expiresAt - Date.now());
         remaining = Math.ceil(ms / 1000);
         if (remaining === 0) {
-            // Codigo expirou — limpa para forcar gerar novo.
+            // Código expirou — limpa para forçar gerar novo.
             pending = null;
             if (timer !== null) {
                 window.clearInterval(timer);
@@ -63,7 +63,7 @@
     }
 
     function formatCode(c: string): string {
-        // "123456" → "123 456" (mais legivel para ditar em voz alta)
+        // "123456" → "123 456" (mais legível para ditar em voz alta)
         return c.length === 6 ? `${c.slice(0, 3)} ${c.slice(3)}` : c;
     }
 
@@ -74,9 +74,9 @@
 
 <section class="card-padded flex flex-col gap-4">
     <div>
-        <h2 class="text-sm font-semibold text-text">Codigo de vinculacao</h2>
+        <h2 class="text-sm font-semibold text-text">Código de vinculação</h2>
         <p class="mt-1 text-xs text-text-muted">
-            Gere um codigo e peca para o filho digitar no app dele. Vale por 5
+            Gere um código e peça para o filho digitar no app dele. Vale por 5
             minutos.
         </p>
     </div>
@@ -91,11 +91,11 @@
             </div>
         </div>
         <button type="button" onclick={generate} disabled={generating} class="btn-secondary">
-            Gerar outro codigo
+            Gerar outro código
         </button>
     {:else}
         <button type="button" onclick={generate} disabled={generating} class="btn-primary">
-            {generating ? 'Gerando…' : 'Gerar codigo de vinculacao'}
+            {generating ? 'Gerando…' : 'Gerar código de vinculação'}
         </button>
     {/if}
 </section>

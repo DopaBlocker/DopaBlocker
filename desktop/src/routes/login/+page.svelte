@@ -1,7 +1,7 @@
 <!--
   Tela de login. Recebe `?mode=personal` ou `?mode=parental` da URL — o
-  /welcome roteia conforme o card que o usuario escolheu. Sem mode valido,
-  redireciona de volta para /welcome (nao tem sentido entrar aqui sem ter
+  /welcome roteia conforme o card que o usuário escolheu. Sem mode válido,
+  redireciona de volta para /welcome (não tem sentido entrar aqui sem ter
   escolhido um modo).
 -->
 <script lang="ts">

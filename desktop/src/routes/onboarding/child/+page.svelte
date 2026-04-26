@@ -1,10 +1,10 @@
 <!--
-  Tela "Filhos": vincula este dispositivo a uma conta de pai usando o codigo
-  de 6 digitos. Sem email, sem senha, sem Firebase. Apos confirmar, o backend
-  retorna um Device Token que e persistido em SQLCipher e o store entra em
+  Tela "Filhos": vincula este dispositivo a uma conta de pai usando o código
+  de 6 dígitos. Sem email, sem senha, sem Firebase. Após confirmar, o backend
+  retorna um Device Token que é persistido em SQLCipher e o store entra em
   `child_session`.
 
-  Esta tela nao deve aparecer para usuarios ja autenticados — o `+layout.svelte`
+  Esta tela não deve aparecer para usuários já autenticados — o `+layout.svelte`
   cuida de redirecionar.
 -->
 <script lang="ts">
@@ -37,7 +37,7 @@
 
     function detectDeviceName(): string {
         // Sem API nativa de hostname no Tauri 2 sem plugin extra; usar um
-        // identificador generico — o pai pode renomear depois (futuro).
+        // identificador genérico — o pai pode renomear depois (futuro).
         return 'Computador do filho';
     }
 </script>
@@ -56,7 +56,7 @@
                     Vincular este dispositivo
                 </h1>
                 <p class="mt-1 text-xs text-text-muted">
-                    Digite o codigo de 6 digitos que o seu responsavel gerou.
+                    Digite o código de 6 dígitos que o seu responsável gerou.
                 </p>
             </div>
         </div>
@@ -74,7 +74,7 @@
             disabled={submitting}
             class="btn-ghost mt-6 w-full justify-center text-xs"
         >
-            Nao e voce? Voltar
+            Não é você? Voltar
         </button>
     </div>
 </div>

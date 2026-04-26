@@ -44,7 +44,7 @@ export interface AuthState {
     phase: AuthPhase;
     user: User | null;
     firebase_user: FirebaseIdentity | null;
-    /** Preenchido apenas quando phase === 'child_session' — sessao de filho
+    /** Preenchido apenas quando phase === 'child_session' — sessão de filho
      * sem conta Firebase. Contém o `dt_<token>` (já com prefixo). */
     child: ChildSession | null;
     loading: boolean;
@@ -121,7 +121,7 @@ function createAuthStore() {
     }
 
     function beginPendingAction(resolveOn: Set<AuthPhase>, rejectOn: Set<AuthPhase>) {
-        pendingAction?.reject(new Error('Fluxo de autenticacao interrompido.'));
+        pendingAction?.reject(new Error('Fluxo de autenticação interrompido.'));
         return new Promise<AuthState>((resolve, reject) => {
             pendingAction = { resolveOn, rejectOn, resolve, reject };
         });
@@ -148,15 +148,15 @@ function createAuthStore() {
         if (initialized) return;
         initialized = true;
 
-        // Antes de escutar Firebase, tenta restaurar sessao de filho do
-        // SQLCipher. Se existir e for valida, fica em `child_session`;
-        // qualquer evento Firebase posterior (que nao deveria acontecer
-        // porque o filho nao loga no Firebase) e ignorado pelo
+        // Antes de escutar Firebase, tenta restaurar sessão de filho do
+        // SQLCipher. Se existir e for válida, fica em `child_session`;
+        // qualquer evento Firebase posterior (que não deveria acontecer
+        // porque o filho não loga no Firebase) é ignorado pelo
         // `authSyncVersion`.
         void hydrateFromChildSession();
 
         onAuthChange((fbUser) => {
-            // Filho nao toca Firebase — se ja restauramos child_session,
+            // Filho não toca Firebase — se já restauramos child_session,
             // ignoramos eventos do Firebase SDK.
             if (snapshot.phase === 'child_session') return;
             void hydrateFromFirebase(fbUser);
@@ -169,7 +169,7 @@ function createAuthStore() {
             if (!session) return;
 
             // Coloca o provider antes da primeira request — a chamada de
-            // validacao precisa do header `dt_<token>`.
+            // validação precisa do header `dt_<token>`.
             setAuthProvider(childAuthProvider(session.device_token));
             const syncVersion = ++authSyncVersion;
 
@@ -196,11 +196,11 @@ function createAuthStore() {
                         phase: 'signed_out',
                         user: null,
                         firebase_user: null,
-                        error: 'Este dispositivo foi desvinculado. Peça um novo código ao responsável.',
+                        error: 'Este dispositivo foi desvinculado. Peça um novo código ao responsável.',
                     });
                 } else {
-                    // Backend offline — mantem child_session, UI mostra erro
-                    // e proxima request tentara de novo.
+                    // Backend offline — mantém child_session, UI mostra erro
+                    // e próxima request tentará de novo.
                     commit({
                         phase: 'child_session',
                         user: null,
@@ -261,7 +261,7 @@ function createAuthStore() {
 
             if (isUnauthorized(err)) {
                 await expireFirebaseSession(
-                    'Sua sessao Firebase expirou, foi removida ou ficou invalida. Entre novamente.',
+                    'Sua sessão Firebase expirou, foi removida ou ficou inválida. Entre novamente.',
                 );
                 return snapshot;
             }
@@ -378,7 +378,7 @@ function createAuthStore() {
     ) {
         const fbUser = currentFirebaseUser();
         if (!fbUser) {
-            const message = 'Sua sessao expirou. Entre novamente para concluir o cadastro.';
+            const message = 'Sua sessão expirou. Entre novamente para concluir o cadastro.';
             commit({
                 phase: 'signed_out',
                 user: null,
@@ -448,11 +448,11 @@ function createAuthStore() {
 
             if (isUnauthorized(resolvedError)) {
                 await expireFirebaseSession(
-                    'Sua sessao Firebase expirou, foi removida ou ficou invalida. Entre novamente.',
+                    'Sua sessão Firebase expirou, foi removida ou ficou inválida. Entre novamente.',
                 );
                 throw asError(
                     resolvedError,
-                    'Sua sessao Firebase expirou, foi removida ou ficou invalida. Entre novamente.',
+                    'Sua sessão Firebase expirou, foi removida ou ficou inválida. Entre novamente.',
                 );
             }
 
@@ -485,8 +485,8 @@ function createAuthStore() {
     async function logout() {
         ++authSyncVersion;
         nextSignedOutError = null;
-        // Cobre os dois cenarios: sessao Firebase (Pessoal/Pais) e sessao
-        // de filho. Limpamos os dois sempre — os erros sao silenciados porque
+        // Cobre os dois cenários: sessão Firebase (Pessoal/Pais) e sessão
+        // de filho. Limpamos os dois sempre — os erros são silenciados porque
         // queremos terminar em `signed_out` independente.
         try {
             if (snapshot.phase === 'child_session') {
@@ -504,8 +504,8 @@ function createAuthStore() {
         }
     }
 
-    /// Fluxo "Filhos": sem Firebase, sem email/senha. Recebe o codigo de 6
-    /// digitos que o pai gerou, chama POST /devices/link/confirm (rota publica),
+    /// Fluxo "Filhos": sem Firebase, sem email/senha. Recebe o código de 6
+    /// dígitos que o pai gerou, chama POST /devices/link/confirm (rota pública),
     /// recebe o `dt_<token>`, persiste em SQLCipher e entra em child_session.
     async function confirmChildCode(payload: ConfirmLinkRequest) {
         ++authSyncVersion;
@@ -517,8 +517,8 @@ function createAuthStore() {
         });
 
         try {
-            // Garante que NAO mandamos credencial nesta request — o backend
-            // exige rota publica (sem header).
+            // Garante que NÃO mandamos credencial nesta request — o backend
+            // exige rota pública (sem header).
             setAuthProvider(anonymousAuthProvider);
             const resp = await api.confirmLinkCode(payload);
 
@@ -617,17 +617,17 @@ function identityFromUser(user: User): FirebaseIdentity {
 
 function fallbackDisplayName(email: string | null | undefined): string {
     const localPart = email?.split('@')[0]?.trim();
-    return localPart || 'Usuario';
+    return localPart || 'Usuário';
 }
 
 function fallbackPhaseMessage(phase: AuthPhase): string {
     switch (phase) {
         case 'backend_unavailable':
-            return 'Nao foi possivel falar com o backend local.';
+            return 'Não foi possível falar com o backend local.';
         case 'signed_out':
             return 'Entre novamente para continuar.';
         default:
-            return 'Nao foi possivel concluir a autenticacao.';
+            return 'Não foi possível concluir a autenticação.';
     }
 }
 
@@ -654,16 +654,16 @@ function friendly(err: unknown): string {
             case 'auth/user-not-found':
                 return 'Email ou senha incorretos';
             case 'auth/email-already-in-use':
-                return 'Este email ja existe no Firebase. Entre e conclua o cadastro local.';
+                return 'Este email já existe no Firebase. Entre e conclua o cadastro local.';
             case 'auth/weak-password':
                 return 'A senha precisa ter pelo menos 6 caracteres';
             case 'auth/invalid-email':
-                return 'Email invalido';
+                return 'Email inválido';
             case 'auth/popup-closed-by-user':
             case 'auth/cancelled-popup-request':
                 return 'Login cancelado';
             case 'auth/network-request-failed':
-                return 'Sem conexao com a internet';
+                return 'Sem conexão com a internet';
             default:
                 return err.message;
         }

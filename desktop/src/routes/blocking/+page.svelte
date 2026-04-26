@@ -34,8 +34,8 @@
 
     onMount(() => {
         const unsubA = authStore.subscribe((s: AuthState) => {
-            // Sessao de filho: o user_id vem do `auth.child` (e o user_id do
-            // pai), nao de `auth.user`. Carregamos a blocklist do pai mas
+            // Sessão de filho: o user_id vem do `auth.child` (e o user_id do
+            // pai), não de `auth.user`. Carregamos a blocklist do pai mas
             // bloqueamos qualquer write a partir da UI (read-only).
             isChild = s.phase === 'child_session';
             currentUserId = s.user?.id ?? s.child?.user_id ?? null;
@@ -116,8 +116,8 @@
         <div
             class="rounded-md border border-secondary/50 bg-secondary/10 px-3 py-2 text-xs text-secondary"
         >
-            Voce esta no modo Filhos — a lista e gerenciada pelo responsavel.
-            Apenas visualizacao.
+            Você está no modo Filhos — a lista é gerenciada pelo responsável.
+            Apenas visualização.
         </div>
     {/if}
 

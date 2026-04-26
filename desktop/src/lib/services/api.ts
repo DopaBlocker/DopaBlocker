@@ -2,7 +2,7 @@
 //   1. Pedir ao AuthProvider corrente o header `Authorization` (Firebase JWT
 //      ou Device Token, dependendo do estado do auth store).
 //   2. Retry single-shot em 401 (token possivelmente expirado) — apenas se o
-//      provider suporta refresh (Firebase). Device Token nao tenta de novo.
+//      provider suporta refresh (Firebase). Device Token não tenta de novo.
 //   3. Parsear erros do formato `{ "error": "..." }` e expor via `ApiError`.
 //   4. Tipar retornos com base em `types.ts`.
 
@@ -63,7 +63,7 @@ async function request<T>(
         if (err instanceof DOMException && err.name === 'AbortError') {
             throw new ApiError(
                 0,
-                'O backend demorou demais para responder. Verifique se a API local estah rodando.',
+                'O backend demorou demais para responder. Verifique se a API local está rodando.',
             );
         }
         throw err;
