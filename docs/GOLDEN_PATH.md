@@ -1,206 +1,168 @@
-# DopaBlocker — Golden Path (v0.1)
+# DopaBlocker — Golden Path Atual
 
-Roteiro manual de validação end-to-end. Execute do zero (DB do desktop apagado,
-backend limpo) para garantir que cada etapa do plano de construção continua
-funcionando. Automatização E2E (Playwright + Tauri WebDriver) é um gap
-planejado — ver [GAPS.md](GAPS.md) item O1.
+Roteiro manual para validar o que existe hoje em backend + desktop. A meta v0.2
+também inclui mobile Android, mas o mobile ainda está em placeholder; os testes
+mobile entram aqui quando `mobile/` deixar de ser esqueleto.
+
+Automação E2E ainda é gap; ver [GAPS.md](GAPS.md) seção "Observability & Testing".
 
 ---
 
 ## Pré-requisitos
 
 - Windows 10/11 (x64)
-- Rust toolchain + `pnpm` instalados
-- `.env` configurados em `desktop/` e `backend/` (ver [README.md](../README.md))
-- Terminal **como Administrador** para os passos que envolvem porta 53, WFP
-  e `netsh` (se rodar como usuário comum, vai ver "executar como
-  administrador" nos toasts — as etapas 1–4 e 9 ainda funcionam)
+- Rust toolchain, `pnpm` e dependências do Tauri instalados
+- `.env` configurados em `backend/` e `desktop/`
+- Terminal como Administrador para validar porta 53, WFP, `netsh` e CA local
 
-## Limpeza inicial (opcional, para teste do zero)
+## Limpeza Inicial Opcional
 
 ```powershell
-# Remove cache local do desktop
 Remove-Item "$env:APPDATA\app.dopablocker.desktop" -Recurse -ErrorAction SilentlyContinue
-# Remove DB do backend (apaga usuários locais)
 Remove-Item ".\backend\dopablocker.db" -ErrorAction SilentlyContinue
-# Limpa localStorage do onboarding — é per-user, basta abrir DevTools e apagar
 ```
+
+Para repetir o onboarding de primeira execução, limpe também o `localStorage`
+do WebView/DevTools.
+
+---
 
 ## Passos
 
 ### 1. Subir backend
+
 ```powershell
 cd backend
 cargo run
 ```
-**Esperado:**
-```
-Starting DopaBlocker Backend...
-Migration aplicada migration="001_initial"
-Migration aplicada migration="002_parental_fixes"
-Migration aplicada migration="003_email_verification"
-Listening on 0.0.0.0:3000
-```
-- [ ] Backend em `:3000` sem erro.
+
+Esperado:
+
+- Backend escuta em `0.0.0.0:3000`.
+- Migrations `001_initial`, `002_parental_fixes` e `003_email_verification`
+  são aplicadas em banco limpo.
+- `GET http://localhost:3000/health` retorna `OK`.
 
 ### 2. Subir desktop
-Em outro terminal (admin):
+
+Em outro terminal, na raiz do projeto:
+
 ```powershell
-pnpm tauri:dev
+pnpm --dir desktop tauri dev
 ```
-**Esperado:**
-- [ ] Compila sem erro (primeira vez: ~2min)
-- [ ] Janela abre com tela de login centralizada
-- [ ] Logo mark com gradiente azul→roxo visível
 
-### 3. Cadastro
-- [ ] Aba "Cadastrar" exibe os 3 cards (Pessoal, Pais, Filhos)
-- [ ] Cards "Pais" e "Filhos" têm badge "Em breve"
-- [ ] Clicar em "Pais" ou "Filhos" com form vazio mostra banner "Esse modo chega na v0.2"
-- [ ] Preencher nome, email, senha e confirmação de senha diferentes → mostra erro de senha
-- [ ] Preencher nome, email, senha e confirmação iguais e clicar "Pessoal" → envia código por email
-- [ ] Digitar código inválido → mostra erro sem criar usuário
-- [ ] Digitar código correto → cria conta Firebase, cria usuário local e redireciona para dashboard
-- [ ] No backend, log `INFO User created ...` aparece
+Esperado:
 
-### 4. Onboarding de primeira execução
-- [ ] Modal "Bem-vindo ao DopaBlocker" aparece automaticamente pós-cadastro
-- [ ] Lista os 4 pontos: admin, duas camadas, dados no disco, Firebase mínimo
-- [ ] Clicar "Entendi, vamos começar" fecha o modal
-- [ ] Reload (Ctrl+R na janela dev) — modal **não** reaparece (localStorage lembrou)
+- Tauri compila sem erro.
+- Janela abre em `/welcome`.
+- A tela inicial mostra três opções: Pessoal, Pais e Filhos.
 
-### 5. Sidebar e navegação
-- [ ] Sidebar à esquerda, 240px, com logo + 3 links
-- [ ] Link ativo tem barra azul vertical à esquerda
-- [ ] Card do usuário embaixo mostra nome + email
-- [ ] Botão "Sair" no rodapé da sidebar
+### 3. Cadastro Pessoal
 
-### 6. Dashboard
-- [ ] Saudação dinâmica ("Bom dia", "Boa tarde", "Boa noite") com primeiro nome
-- [ ] Card grande de status mostra "Pausado" (cinza)
-- [ ] Grid com 3 métricas: Itens bloqueados (0), Filtro adulto (Desligado), Modo (Pessoal)
-- [ ] Versão do app no rodapé ("DopaBlocker desktop v0.1.0")
+- Clicar em **Pessoal** leva para `/login?mode=personal`.
+- Aba **Cadastrar** mostra formulário de nome, email, senha e confirmação.
+- Senhas divergentes mostram erro.
+- Cadastro email/senha envia código de verificação.
+- Código inválido não cria usuário local.
+- Código válido cria conta Firebase, chama `POST /auth/register` e abre o dashboard.
+- Onboarding "Bem-vindo ao DopaBlocker" aparece uma vez por usuário.
 
-### 7. Adicionar bloqueio
-Ir para /blocking → clicar "Adicionar":
-- [ ] Modal abre com abas Site / App / Palavra-chave
-- [ ] Campo "Valor" focado automaticamente
-- [ ] Teste de normalização: digitar `https://www.Instagram.com/reels` → clicar Adicionar → aparece como `instagram.com` na lista
-- [ ] Toast verde "Bloqueio adicionado" no canto inferior direito
-- [ ] Lista mostra o item com badge "Site" e "agora"
-- [ ] Esc fecha o modal; click fora do dialog também fecha
+### 4. Login Existente
 
-### 8. Validação server-side
-No terminal:
-```powershell
-curl.exe -X POST http://localhost:3000/blocklist `
-  -H "Authorization: Bearer <JWT>" `
-  -H "Content-Type: application/json" `
-  -d "{\"item_type\":\"domain\",\"value\":\"https://WWW.Twitter.COM/path\"}"
-```
-(pegue o JWT via DevTools do Tauri → `await firebase.auth().currentUser.getIdToken()`)
-- [ ] Retorna 200 com `value: "twitter.com"` normalizado
-- [ ] POST com `value: "foo"` (sem TLD) retorna 400 "domínio deve conter pelo menos um ponto"
+- Logout abre modal de confirmação.
+- Confirmar logout volta para `/welcome`.
+- Clicar em **Pessoal** ou **Pais** e usar a aba **Entrar** autentica com conta existente.
+- Onboarding não reaparece para o mesmo usuário.
 
-### 9. Ativar bloqueio (requer admin)
-- [ ] Clicar "Ativar bloqueio" no card de status
-- [ ] Toast "Bloqueio ativado"
-- [ ] Status vira verde "Ativo"
-- [ ] Em outro terminal: `ipconfig /all` mostra DNS da interface ativa = `127.0.0.1`
-- [ ] `nslookup instagram.com` (sem especificar servidor) → `127.0.0.1`
-- [ ] `nslookup google.com` → resolve IP real
-- [ ] `nslookup instagram.com 8.8.8.8` → **timeout** (WFP bloqueia DNS fora do proxy)
-- [ ] `netsh wfp show state` — arquivo XML gerado contém "DopaBlocker" nos filtros
+### 5. Cadastro Pais e Vinculação Filho
 
-### 9.1 Instalação da CA local
-- [ ] Primeiro ativar: log `"CA instalada no Windows Root store"` ou `"CA já presente no Windows Root store"`
-- [ ] `certutil -store Root | findstr DopaBlocker` mostra o certificado raiz do DopaBlocker
-- [ ] O log inclui o thumbprint da CA local
+- Clicar em **Pais** leva para `/login?mode=parental`.
+- Cadastro/login parental abre dashboard com modo `Parental`.
+- Sidebar mostra link **Filhos**.
+- Em `/parental`, clicar **Gerar código de vinculação**.
+- O desktop registra o device titular se ainda não existir e então chama
+  `POST /devices/link/generate`.
+- Código de 6 dígitos aparece com countdown de 5 minutos.
+- Em `/welcome`, clicar **Filhos** leva para `/onboarding/child`.
+- Digitar o código válido chama `POST /devices/link/confirm`, salva
+  `child_session` no SQLCipher local e leva para `/child-blocked`.
+- Revogar o filho em `/parental` faz o token antigo deixar de funcionar no
+  próximo ciclo de validação.
 
-### 9.2 Bloqueio HTTPS
-- [ ] `https://instagram.com` no Chrome/Edge/Brave → página do DopaBlocker
-- [ ] Página mostra `instagram.com` e "Na sua lista de bloqueios"
-- [ ] Barra de URL não mostra aviso vermelho de certificado
-- [ ] `netstat -an | findstr :443` mostra `127.0.0.1:443` em LISTENING enquanto o engine está ativo
+### 6. Dashboard e Navegação
 
-### 9.3 HTTPS via filtro adulto
-- [ ] Toggle "Filtro de conteúdo adulto" → ON
-- [ ] `https://pornhub.com` no Chrome/Edge/Brave → página do DopaBlocker
-- [ ] Página mostra `pornhub.com` e "Filtro de conteúdo adulto"
+- Dashboard mostra saudação, status do bloqueio, métricas e modo atual.
+- `/blocking` mostra lista de bloqueios e toggles.
+- `/settings` mostra conta, modo, versão, logout e exclusão de conta.
+- `/parental` só aparece para usuário com `mode=parental`.
+- Sessão `child_session` fica presa em `/child-blocked`, sem sidebar.
 
-### 9.4 HTTP ainda funciona
-- [ ] `http://xvideos.com` → página do DopaBlocker
+### 7. Blocklist
 
-### 9.5 Firefox (limitação conhecida)
-- [ ] Firefox pode mostrar erro de certificado porque usa NSS em vez do Windows Root store
+- Em `/blocking`, clicar **Adicionar** abre modal.
+- Domínio `https://www.Instagram.com/reels` é normalizado para `instagram.com`.
+- Item aparece na lista com badge `Site`.
+- Remover item atualiza UI e backend.
+- POST direto com domínio sem ponto retorna `400`.
+- Duplicata retorna `409`.
 
-### 10. Hot reload da blocklist
-- [ ] Com bloqueio ativo, adicionar `youtube.com`
-- [ ] `nslookup m.youtube.com` (subdomínio!) → `127.0.0.1` imediato (sem precisar toggle off/on)
-- [ ] Remover `youtube.com` pela UI → `nslookup m.youtube.com` volta a resolver
+### 8. Ativar Bloqueio Desktop
 
-### 11. Filtro adulto
-- [ ] Toggle "Filtro de conteúdo adulto" → ON
-- [ ] Na primeira vez, badge "Construindo…" aparece por alguns segundos
-- [ ] Após construir, badge some
-- [ ] Toast "Filtro adulto ligado"
-- [ ] `nslookup pornhub.com` → `127.0.0.1`
-- [ ] `nslookup m.pornhub.com` → `127.0.0.1` (walk label-por-label funciona)
-- [ ] Toggle → OFF → `nslookup pornhub.com` resolve normalmente
+Requer terminal/app como administrador.
 
-### 12. Desativar bloqueio
-- [ ] Clicar "Pausar"
-- [ ] Toast "Bloqueio pausado"
-- [ ] `ipconfig /all` mostra DNS original (não mais 127.0.0.1)
-- [ ] `nslookup instagram.com` resolve IP real de novo
-- [ ] `nslookup instagram.com 8.8.8.8` funciona (filtros WFP removidos)
+- Clicar **Ativar bloqueio** em `/blocking`.
+- DNS da interface ativa aponta para loopback (`127.0.0.1` e/ou `::1` conforme família).
+- `nslookup instagram.com` retorna bloqueio/local.
+- `nslookup google.com` resolve IP real.
+- DNS externo direto para `8.8.8.8` deve ser bloqueado pelo WFP em IPv4.
+- `netsh wfp show state` contém filtros DopaBlocker.
 
-### 13. Crash recovery
-- [ ] Ativar bloqueio → verificar `ipconfig` mostrando `127.0.0.1`
-- [ ] **Kill** o processo `dopablocker-desktop.exe` via Task Manager (End Task)
-- [ ] `ipconfig /all` — DNS ainda é `127.0.0.1` (órfão)
-- [ ] Reabrir o app (`pnpm tauri:dev`) como admin
-- [ ] Log esperado: `"engine reativado no boot"` ou `"falha ao restaurar DNS órfão"` + reconfiguração
-- [ ] `ipconfig /all` deve estar em estado consistente: ou original restaurado, ou apontando pro proxy novo
+### 9. Página de Bloqueio e CA Local
 
-### 14. Logout
-- [ ] Clicar "Sair" na sidebar **OU** em /settings → "Sair da conta"
-- [ ] Modal de confirmação abre
-- [ ] Cancelar → modal fecha, sessão permanece
-- [ ] Confirmar "Sair" → redireciona para /login
-- [ ] Sem toasts de erro
+- Primeira ativação instala ou reutiliza a CA local do DopaBlocker.
+- `certutil -store Root | findstr DopaBlocker` encontra a CA no Windows Root Store.
+- `https://instagram.com` em Chrome/Edge/Brave mostra página local do DopaBlocker.
+- A página exibe domínio e razão do bloqueio.
+- Firefox pode mostrar erro de certificado por usar NSS.
 
-### 15. Login com conta existente
-- [ ] Na tela de login, aba "Entrar"
-- [ ] Email + senha corretos → dashboard
-- [ ] Onboarding **não** reaparece (localStorage tem flag desse user)
-- [ ] Bloqueios persistidos aparecem na lista
+### 10. Filtro Adulto
 
-### 16. Testes de erro
-- [ ] Parar o backend (Ctrl+C no terminal backend)
-- [ ] Adicionar item → toast vermelho "Falha ao adicionar" ou similar
-- [ ] Re-iniciar backend → ações voltam a funcionar
+- Toggle **Filtro de conteúdo adulto** liga a configuração.
+- Na primeira construção, a UI mostra estado `Construindo...`.
+- Após a lista carregar, domínio adulto conhecido bloqueia.
+- Desligar o toggle libera o domínio novamente.
+
+### 11. Hot Reload e Crash Recovery
+
+- Com bloqueio ativo, adicionar `youtube.com` bloqueia subdomínios sem reiniciar engine.
+- Remover `youtube.com` libera subdomínios.
+- Após kill forçado do processo, reabrir o app deve restaurar DNS órfão ou reativar o engine de forma consistente.
+
+### 12. Exclusão de Conta
+
+- Em `/settings`, abrir **Excluir conta permanentemente**.
+- Texto de confirmação obrigatório impede exclusão acidental.
+- Fluxo tenta apagar Firebase primeiro e backend depois.
+- Ao final, logout local volta para `/welcome`.
 
 ---
 
-## Testes automatizados (existentes)
+## Verificações Automatizadas
 
 ```powershell
-cargo test --workspace         # 37 testes: backend (4) + desktop (20) + shared (13)
-pnpm --filter desktop check     # svelte-check: 0 errors, 0 warnings
+cargo test
+pnpm --dir desktop check
 ```
 
-**Cobertura atual:**
-- `shared`: Bloom filter (insert/contains/FP-rate), domain_matcher (normalize/extract/is_blocked)
-- `desktop`: system_dns parser (EN/PT/IPv6), adult_filter parser, block_reason, block_page render, CA local e cache SNI
-
-**Gaps automatizados:** ver [GAPS.md](GAPS.md) seção "Observability & Testing".
+Última auditoria local: `cargo test` passou com 60 testes Rust
+(backend 20, desktop 24, shared 16) e `pnpm --dir desktop check` passou com
+0 erros/0 warnings. `flutter analyze` foi interrompido anteriormente; mobile
+ainda não é critério de pronto porque os arquivos são placeholders.
 
 ---
 
-## Critério de release
+## Critério de Release Interno
 
-Todos os itens acima marcados OK + os testes automatizados verdes = v0.1 pronto
-para uso pessoal do dev. Para uso externo, rever antes os hardening items
-🟡H1 (CORS), 🟡H2 (rate limiting) e 🔵U2 (UAC manifest / code signing) em
-[GAPS.md](GAPS.md).
+Todos os passos aplicáveis acima marcados OK, `cargo test` verde e
+`pnpm --dir desktop check` verde. Para v0.2, adicionar golden path mobile e os
+smoke tests cross-platform descritos em [PROTOTYPE.md](PROTOTYPE.md).

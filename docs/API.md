@@ -266,7 +266,7 @@ Response 200:
 O backend apaga o usuário local e os dados dependentes por cascade
 (`devices`, `blocked_items`, `parental_links`, `adult_filter_settings` e
 `device_tokens`). O frontend ainda é responsável por excluir a conta no Firebase;
-o backend não usa Firebase Admin SDK no v0.1.
+o backend não usa Firebase Admin SDK no protótipo atual.
 
 ---
 

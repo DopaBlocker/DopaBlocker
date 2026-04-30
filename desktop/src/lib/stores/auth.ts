@@ -8,6 +8,7 @@ import {
     firebaseAuthProvider,
     setAuthProvider,
 } from '../services/auth-provider';
+import { ensureOwnerDeviceRegistered } from '../services/device-registration';
 import {
     currentFirebaseUser,
     getIdToken,
@@ -255,6 +256,9 @@ function createAuthStore() {
                 firebase_user: identityFromUser(user),
                 error: null,
             });
+            void ensureOwnerDeviceRegistered(user.id).catch((err) =>
+                console.warn('Falha ao registrar device do titular:', err),
+            );
         } catch (err) {
             if (syncVersion !== authSyncVersion) return snapshot;
 
@@ -430,6 +434,9 @@ function createAuthStore() {
                 firebase_user: identityFromUser(user),
                 error: null,
             });
+            void ensureOwnerDeviceRegistered(user.id).catch((err) =>
+                console.warn('Falha ao registrar device do titular:', err),
+            );
             return user;
         } catch (initialErr) {
             let resolvedError: unknown = initialErr;
@@ -445,6 +452,9 @@ function createAuthStore() {
                         firebase_user: identityFromUser(user),
                         error: null,
                     });
+                    void ensureOwnerDeviceRegistered(user.id).catch((err) =>
+                        console.warn('Falha ao registrar device do titular:', err),
+                    );
                     return user;
                 } catch (loginErr) {
                     resolvedError = loginErr;

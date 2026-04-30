@@ -2,6 +2,12 @@
 
 Este documento descreve como desenvolver o protótipo DopaBlocker do zero até o produto funcional. O desenvolvimento é dividido em 3 trilhas que podem ser executadas em paralelo, com pontos de convergência definidos.
 
+> **Nota de status:** este guia é um plano de desenvolvimento/histórico técnico,
+> não um snapshot fiel do branch atual. Para o que já foi implementado e o que
+> ainda está aberto, consulte [IMPLEMENTACAO.md](IMPLEMENTACAO.md) e
+> [GAPS.md](GAPS.md). Onde este guia divergir do código atual, o código e esses
+> documentos de status vencem.
+
 ---
 
 ## Visão Geral
@@ -595,10 +601,10 @@ No `+layout.svelte`, chamar `onAuthChange` do Firebase para manter o caminho Pes
 
 **Componentes** — Implementar com Tailwind CSS:
 
-1. `WelcomeScreen.svelte` — Tela inicial com os **três botões grandes**: Pessoal, Pais, Filhos. Cada botão navega para a rota correspondente: `/onboarding/personal`, `/onboarding/parent`, `/onboarding/child`. É a primeira tela que aparece quando o app não tem sessão salva.
-2. `SignupForm.svelte` — Formulário compartilhado entre Pessoal e Pais (email, senha, nome, botão Google). Recebe uma prop `mode: 'personal' | 'parental'` que é enviada ao backend no `POST /auth/register`.
+1. `routes/welcome/+page.svelte` — Tela inicial com os **três botões grandes**: Pessoal, Pais, Filhos. Pessoal navega para `/login?mode=personal`, Pais para `/login?mode=parental`, e Filhos para `/onboarding/child`. É a primeira tela que aparece quando o app não tem sessão salva.
+2. `LoginForm.svelte` — Formulário compartilhado entre login/cadastro de Pessoal e Pais (email, senha, nome, botão Google). Recebe uma prop `mode: 'personal' | 'parental'` que é enviada ao backend no `POST /auth/register`.
 3. `ChildCodeInput.svelte` — Tela do fluxo "Filhos": 6 inputs separados de 1 caractere cada (avançam foco automaticamente), botão Confirmar, sem qualquer campo de cadastro. Chama `confirmLinkCode(code)` e, em sucesso, salva o `device_token` + `user_id` no store e navega para a tela read-only do filho.
-4. `LoginForm.svelte` — Para quem já tem conta (apenas Pessoal e Pais). Email/senha, botão Google, link "Criar conta" que volta para `WelcomeScreen`.
+4. `LoginForm.svelte` — Para quem já tem conta (apenas Pessoal e Pais). Email/senha, botão Google, e aba de cadastro no mesmo componente.
 5. `BlockList.svelte` — Lista que itera sobre a blocklist do store, renderizando um `BlockListTile` para cada item. Mostra mensagem "Nenhum site bloqueado" quando a lista está vazia. Quando `auth.source === 'child'`, renderiza em modo read-only (sem botões de adicionar/remover).
 6. `AddBlockModal.svelte` — Dialog modal com input para URL ou nome do app, select para escolher tipo (domain/app), e botões Cancelar/Adicionar. Visível apenas para user pai ou pessoal.
 7. `ParentalDashboard.svelte` — Lista de dispositivos-filhos vinculados (via `GET /devices` filtrado por `is_child = true`). Mostra mensagem quando nenhum dispositivo está vinculado.
@@ -606,11 +612,9 @@ No `+layout.svelte`, chamar `onAuthChange` do Firebase para manter o caminho Pes
 
 **Rotas (SvelteKit):**
 
-1. `welcome/+page.svelte` — Usa `WelcomeScreen`. Primeira tela quando não há sessão.
-2. `onboarding/personal/+page.svelte` — `SignupForm` com `mode='personal'` + link para login se já tiver conta.
-3. `onboarding/parent/+page.svelte` — `SignupForm` com `mode='parental'` + link para login.
-4. `onboarding/child/+page.svelte` — `ChildCodeInput`.
-5. `login/+page.svelte` — `LoginForm`, usado quando o usuário clica em "Já tenho conta" nos fluxos Pessoal/Pais.
+1. `welcome/+page.svelte` — Primeira tela quando não há sessão.
+2. `login/+page.svelte` — `LoginForm`, usado por `/login?mode=personal` e `/login?mode=parental`.
+3. `onboarding/child/+page.svelte` — `ChildCodeInput`.
 6. `+page.svelte` (home) — Card grande com status do bloqueio (ativo/inativo, verde/vermelho), botão on/off central, contador de sites e apps bloqueados, indicador do modo atual. No modo `child`, o botão on/off é read-only (cinza, sem ação).
 7. `blocking/+page.svelte` — `BlockList` + (se não for `child`) `AddBlockModal` + toggle de filtro adulto + botão master de bloqueio.
 8. `parental/+page.svelte` — Só acessível em modo parental e não-child: `DeviceLinkCode` + `ParentalDashboard`.
@@ -971,14 +975,14 @@ Se os cenários falharem, é porque a sincronização precisa de ajustes. O flux
 Ação do usuário (add/remove)
   → Salva no SQLCipher local (imediato, para funcionar offline)
   → Envia para Backend API (async)
-  → Backend salva no SQLCipher do server + Firestore
+  → Backend salva no SQLCipher do server
 
 Outro dispositivo:
   → Ao abrir o app OU a cada 30 segundos: GET /blocklist
   → Atualiza SQLCipher local + UI
 ```
 
-Para o protótipo, polling simples é suficiente. Listeners real-time do Firestore podem ser adicionados no futuro.
+Para o protótipo, polling simples via backend é suficiente. Listeners real-time/Firestore podem ser adicionados no futuro, mas não fazem parte da implementação atual.
 
 ### Critério de conclusão
 

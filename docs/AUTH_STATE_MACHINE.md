@@ -98,7 +98,7 @@ No fluxo Filhos, o device é registrado sob o `user_id` do **pai** com `Device.i
 - **Não fazemos cache local** do JWT — ele é renovado automaticamente pelo SDK.
 
 ### Sessão de filho
-- **Onde**: tabela `child_session` no SQLCipher local. Schema **idêntico** entre desktop (`desktop/src-tauri/migrations/002_child_session.sql`) e mobile (`mobile/lib/core/database_service.dart`):
+- **Onde**: tabela `child_session` no SQLCipher local. No desktop, o schema implementado vive em `desktop/src-tauri/migrations/002_child_session.sql`. O mobile v0.2 deve copiar o mesmo contrato em `mobile/lib/core/database_service.dart` quando o SQLCipher Dart for implementado:
 
 ```sql
 CREATE TABLE IF NOT EXISTS child_session (
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS child_session (
 ```
 
 - **Por que singleton**: um device físico não pode estar vinculado a duas contas de pai simultaneamente. Trocar de pai = `clearChildSession()` + novo `confirmChildCode()`.
-- **Por que texto puro**: o SQLCipher já cifra o arquivo `.db` inteiro com a chave do Credential Manager (Windows) / Keychain (macOS) / Keystore (Android). Cifrar de novo dentro seria dupla criptografia inútil.
+- **Por que texto puro**: no desktop atual, o SQLCipher já cifra o arquivo `.db` inteiro com a chave do Windows Credential Manager. No mobile v0.2, a mesma ideia deve usar Android Keystore. Cifrar de novo dentro do banco seria dupla criptografia inútil.
 
 ---
 
@@ -180,7 +180,7 @@ pub fn effective_strategy(mode: BlockMode, is_child: bool) -> BlocklistStrategy 
 ### Quem aplica e quando
 
 - **Desktop**: o frontend deriva `ParentalContext { mode, is_child }` do auth store e envia em **toda** chamada Tauri que afeta o engine (`set_blocking_enabled`, `cache_add_item`, `cache_remove_item`, `save_blocklist`). O Rust chama `effective_strategy` e decide entre carregar a lista cheia do SQLCipher ou passar uma lista vazia ao engine. Ver [desktop/src-tauri/src/commands.rs::effective_rules](../desktop/src-tauri/src/commands.rs).
-- **Mobile**: o `blocking_provider.dart` (Riverpod) deriva o mesmo contexto e replica a decisão em Dart antes de chamar `BlockingChannel.updateBlocklist`. As 4 linhas da função são copiadas literalmente do Rust — não vale o custo de FFI.
+- **Mobile v0.2**: o `blocking_provider.dart` (Riverpod) deve derivar o mesmo contexto e replicar a decisão em Dart antes de chamar `BlockingChannel.updateBlocklist`. Hoje esse arquivo ainda é placeholder.
 
 ### Por que a UI mostra a lista mesmo no pai imune
 Pai precisa **gerenciar** a lista (ver, adicionar, remover) — ela apenas não se aplica ao próprio device dele. O cache local sempre tem a lista cheia; quem decide se aplica ou não é o engine.

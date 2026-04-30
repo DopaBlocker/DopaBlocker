@@ -19,6 +19,7 @@ import type {
     EmailCodeVerifyRequest,
     EmailCodeVerifyResponse,
     GenerateLinkCodeResponse,
+    RegisterDeviceRequest,
     RegisterRequest,
     SuccessResponse,
     User,
@@ -127,6 +128,9 @@ export const api = {
 
     // ---- devices / parental ----
     listDevices: () => request<Device[]>('GET', '/devices'),
+
+    registerDevice: (payload: RegisterDeviceRequest) =>
+        request<Device>('POST', '/devices/register', payload),
 
     generateLinkCode: () =>
         request<GenerateLinkCodeResponse>('POST', '/devices/link/generate'),

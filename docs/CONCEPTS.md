@@ -120,17 +120,21 @@ O DNS Proxy e o **coracao do sistema de bloqueio** porque:
 
 A implementacao e diferente em cada plataforma:
 
+**Estado atual:** o desktop usa o DNS Proxy real. O mobile ainda e alvo da
+v0.2; os arquivos Kotlin/Dart existem como placeholders e precisam ser
+implementados antes de considerar o bloqueio Android funcional.
+
 
 | Plataforma            | Como funciona                                                                                                                                  |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Windows (Desktop)** | O DopaBlocker roda um servidor DNS local na porta 53. O WFP (explicado abaixo) redireciona todo o trafego DNS do sistema para esse servidor    |
-| **Android (Mobile)**  | O DopaBlocker cria uma VPN local usando `VpnService`. Todo o trafego de rede passa pelo app, que intercepta os pacotes DNS e aplica o bloqueio |
+| **Android (Mobile)**  | Alvo v0.2: o DopaBlocker cria uma VPN local usando `VpnService`. Todo o trafego de rede passa pelo app, que intercepta os pacotes DNS e aplica o bloqueio |
 
 
 ### Onde fica no codigo?
 
 - **Desktop**: `desktop/src-tauri/src/blocking/dns_proxy.rs`
-- **Mobile**: `mobile/android/.../vpn/DnsVpnService.kt`
+- **Mobile**: `mobile/android/.../vpn/DnsVpnService.kt` (placeholder no estado atual)
 
 ---
 
@@ -241,18 +245,22 @@ HEADER.PAYLOAD.ASSINATURA
 1. **Seguranca sem complexidade**: implementar autenticacao do zero e uma das tarefas mais propensas a falhas de seguranca. Firebase faz isso certo por padrao
 2. **Login com Google de graca**: integrar OAuth 2.0 manualmente exige registrar o app no Google, lidar com tokens de refresh, callbacks, etc. Firebase faz tudo com poucas linhas
 3. **Funciona offline**: o JWT e um token auto-contido — o backend pode validar ele sem precisar consultar o Firebase a cada requisicao. Basta verificar a assinatura
-4. **Cross-platform**: o mesmo sistema de login funciona no desktop (via Firebase JS SDK) e no mobile (via Firebase Flutter SDK), usando a mesma conta e os mesmos tokens
+4. **Cross-platform**: o mesmo sistema de login funciona no desktop (via Firebase JS SDK) e deve ser espelhado no mobile v0.2 (via Firebase Flutter SDK), usando a mesma conta e os mesmos tokens
 5. **Expiracao automatica**: JWTs do Firebase expiram em 1 hora. O SDK renova automaticamente em background, sem o usuario perceber
 
 ### Onde fica no codigo?
 
 - **Backend (validacao)**: `backend/src/middleware.rs` — middleware que intercepta toda requisicao protegida e valida o JWT
 - **Desktop (login)**: `desktop/src/lib/services/firebase.ts` — inicializacao do Firebase Auth e funcoes de login/logout
-- **Mobile (login)**: `mobile/lib/core/firebase_service.dart` — mesma funcao, no Flutter
+- **Mobile (login)**: `mobile/lib/core/firebase_service.dart` — placeholder da implementacao Flutter
 
 ---
 
 ## 5. Riverpod
+
+> **Status atual:** Riverpod e a arquitetura escolhida para o mobile v0.2, mas
+> ainda nao esta instalado nem implementado em `mobile/pubspec.yaml`. Os arquivos
+> em `mobile/lib/providers/*` sao placeholders.
 
 ### O que e gerenciamento de estado?
 
@@ -396,7 +404,7 @@ O Docker e usado especificamente para o **backend** (API REST em Rust/Axum). Os 
 1. **Setup simplificado**: qualquer desenvolvedor novo no projeto roda `docker compose up --build` e tem o backend funcionando — sem instalar Rust, configurar SQLCipher, ou ajustar variaveis de ambiente manualmente
 2. **Ambiente identico**: o container garante que o backend roda com as mesmas versoes de tudo (Rust compiler, libs, SQLCipher) independente do sistema operacional do desenvolvedor
 3. **Isolamento**: o backend roda isolado do resto do sistema. Se algo der errado, basta parar o container — nada afeta o computador do desenvolvedor
-4. **Preparacao para producao**: quando o DopaBlocker for publicado, o backend vai rodar em um servidor na nuvem (AWS, GCP, etc). O mesmo Dockerfile usado em desenvolvimento funciona em producao — sem surpresas
+4. **Preparacao para producao**: quando o DopaBlocker for publicado, o backend vai rodar em um servidor na nuvem (AWS, GCP, etc). O objetivo e ter o mesmo Dockerfile para desenvolvimento e producao — sem surpresas
 
 ### Como funciona no DopaBlocker?
 
@@ -413,7 +421,10 @@ services:
       - SQLCIPHER_KEY=${SQLCIPHER_KEY}
 ```
 
-O `backend/Dockerfile` usa um build **multi-stage** (dois estagios):
+O `backend/Dockerfile` deve usar um build **multi-stage** (dois estagios). No
+estado atual do repositorio ele ainda e um placeholder comentado, entao
+`docker compose up --build` nao deve ser tratado como fluxo pronto ate esse
+arquivo virar um Dockerfile real:
 
 ```
 Estagio 1 (builder):
@@ -431,8 +442,8 @@ Isso significa que a imagem final do container nao tem compilador, codigo fonte,
 
 ### Onde fica no codigo?
 
-- `backend/Dockerfile` — instrucoes de build do container
-- `infra/compose.yml` — orquestracao do container com Docker Compose
+- `backend/Dockerfile` — placeholder atual das instrucoes de build do container
+- `infra/compose.yml` — orquestracao planejada do container com Docker Compose
 
 ---
 
@@ -511,7 +522,7 @@ Com SQLCipher, o arquivo `.db` e inutil sem a chave:
 |------------|-----------|-----------|
 | **Backend (Rust)** | `rusqlite` com feature `bundled-sqlcipher` | Compila o SQLCipher junto com o binario. Chave vem da variavel de ambiente `SQLCIPHER_KEY` |
 | **Desktop (Tauri/Rust)** | Mesmo `rusqlite` com `bundled-sqlcipher` | Chave pode ser derivada de um segredo no app ou lida do keystore do Windows |
-| **Mobile (Flutter)** | `sqflite_sqlcipher` (pacote Dart) | Drop-in replacement do `sqflite`. Passa `password` no `openDatabase()` |
+| **Mobile (Flutter)** | Planejado: `sqflite_sqlcipher` (pacote Dart) | Drop-in replacement do `sqflite`. Passa `password` no `openDatabase()` |
 
 A feature `bundled-sqlcipher` e importante porque ela **compila o SQLCipher inteiro dentro do binario** — nao precisa instalar nada no sistema do usuario. O app ja sai com tudo embutido.
 
@@ -519,7 +530,7 @@ A feature `bundled-sqlcipher` e importante porque ela **compila o SQLCipher inte
 
 - **Backend**: `backend/src/config.rs` (carrega SQLCIPHER_KEY), conexao aberta em `main.rs` com PRAGMA key
 - **Desktop**: `desktop/src-tauri/src/db.rs` — init_db abre SQLCipher com PRAGMA key
-- **Mobile**: `mobile/lib/core/database_service.dart` — openDatabase com password
+- **Mobile**: `mobile/lib/core/database_service.dart` — placeholder; deve abrir SQLCipher com password na v0.2
 
 ---
 
@@ -570,8 +581,8 @@ A feature `bundled-sqlcipher` e importante porque ela **compila o SQLCipher inte
                  │  │SQLCipher (dados)│  │
                  │  └────────────────┘  │
                  │  ┌────────────────┐  │
-                 │  │ Firestore      │  │
-                 │  │ (sync cloud)   │  │
+                 │  │ REST sync      │  │
+                 │  │ via backend    │  │
                  │  └────────────────┘  │
                  └──────────────────────┘
                  ┌──────────────────────┐
@@ -586,12 +597,11 @@ A feature `bundled-sqlcipher` e importante porque ela **compila o SQLCipher inte
 1. O usuario adiciona `instagram.com` na blocklist pelo app desktop
 2. O SvelteKit chama o Tauri Bridge, que chama o backend via API REST
 3. O backend **valida o Firebase JWT** do usuario
-4. O backend salva `instagram.com` no SQLCipher (criptografado) e sincroniza com o Firestore
-5. O Firestore notifica o app mobile (que esta na mesma conta) sobre a mudanca
+4. O backend salva `instagram.com` no SQLCipher (criptografado)
+5. Outros clientes da mesma conta recebem a mudanca via sincronizacao REST/polling
 6. No desktop: o **WFP** ja esta redirecionando todo DNS para o **DNS Proxy** local
 7. Quando o navegador tenta acessar `instagram.com`, o DNS Proxy:
   - Checa a blocklist do usuario → encontra `instagram.com` → bloqueia
   - (Tambem checa o **Bloom Filter** para conteudo adulto, se ativado)
-8. O DNS Proxy responde `0.0.0.0` → o navegador nao consegue carregar o site
-9. No mobile: o **VPN Service** faz o mesmo processo quando o celular tenta resolver o dominio
-
+8. O DNS Proxy responde `127.0.0.1` para registros A bloqueados e o navegador cai na pagina local de bloqueio
+9. No mobile v0.2: o **VPN Service** deve fazer o mesmo processo quando o celular tentar resolver o dominio

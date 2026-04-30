@@ -21,7 +21,7 @@ As pastas-raiz que nasceram aqui:
 - [desktop/](../desktop/) — App Windows feito em Tauri 2 (frontend SvelteKit + backend Rust nativo).
 - [mobile/](../mobile/) — App Android em Flutter + Kotlin nativo (esqueleto, sem implementação completa).
 - [shared/](../shared/) — Crate Rust compartilhada entre backend e desktop. Modelos, Bloom Filter e matcher de domínio.
-- [infra/](../infra/) — Docker Compose, regras do Firestore e configs do Firebase.
+- [infra/](../infra/) — Docker Compose e configs do Firebase. As regras do Firestore existem como referência futura; o backend atual persiste dados de negócio em SQLCipher.
 - [docs/](.) — Documentação humana (esta pasta).
 
 Configuração do monorepo:
@@ -34,15 +34,15 @@ Configuração do monorepo:
 
 ## Marco 2 — SQLCipher entra em cena (`f7143e3`)
 
-A virada conceitual deste commit: **dados sensíveis nunca podem estar em texto plano** — nem no backend, nem no cache local do desktop, nem no banco do mobile. Em vez de SQLite puro, todas as três camadas passam a usar [SQLCipher](CONCEPTS.md#7-sqlcipher), que cifra o arquivo `.db` inteiro com AES-256.
+A virada conceitual deste commit: **dados sensíveis nunca podem estar em texto plano** — nem no backend, nem no cache local do desktop, nem no banco planejado do mobile. Em vez de SQLite puro, backend e desktop já usam [SQLCipher](CONCEPTS.md#7-sqlcipher), e o mobile v0.2 deve seguir o mesmo padrão.
 
 Arquivos tocados:
 
 - [backend/src/config.rs](../backend/src/config.rs) — passa a ler a env var `SQLCIPHER_KEY`. Sem essa chave, qualquer query no backend falha.
 - [desktop/src-tauri/src/db.rs](../desktop/src-tauri/src/db.rs) — incorpora a chave de criptografia local e o ritual obrigatório do `PRAGMA key`.
-- [mobile/lib/core/database_service.dart](../mobile/lib/core/database_service.dart) — usa `sqflite_sqlcipher` (drop-in replacement do `sqflite` que aceita uma `password`).
+- [mobile/lib/core/database_service.dart](../mobile/lib/core/database_service.dart) — placeholder do SQLCipher mobile; a implementação v0.2 deve usar `sqflite_sqlcipher` (drop-in replacement do `sqflite` que aceita uma `password`).
 - [docs/CONCEPTS.md](CONCEPTS.md), [docs/ARCHITECTURE.md](ARCHITECTURE.md), [docs/DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md) — atualizados para registrar a decisão.
-- [infra/compose.yml](../infra/compose.yml) e o [Dockerfile](../backend/Dockerfile) do backend — passam a injetar `SQLCIPHER_KEY` no container.
+- [infra/compose.yml](../infra/compose.yml) injeta `SQLCIPHER_KEY` no container planejado. O [Dockerfile](../backend/Dockerfile) ainda é placeholder comentado e precisa virar build multi-stage real antes do Docker ser considerado pronto.
 
 > **Detalhe técnico que não dá pra esconder:** `PRAGMA key` precisa ser o **primeiríssimo** comando após abrir a conexão. Qualquer outra query antes — mesmo um inocente `SELECT 1` — faz o SQLCipher tratar o arquivo como texto plano e quebrar tudo.
 
@@ -248,14 +248,29 @@ Antes deste commit, qualquer email aceito pelo Firebase virava conta no backend.
 
 ---
 
+## Marco 15 — Auditoria v0.2: registro do device titular
+
+O backend sempre exigiu que o pai tivesse ao menos um `Device.is_child=false`
+antes de gerar código parental (`POST /devices/link/generate`). A UI já tinha o
+botão de gerar código, mas o desktop não chamava `POST /devices/register`, então
+uma conta parental recém-criada podia falhar ao tentar vincular um filho.
+
+- [desktop/src/lib/types.ts](../desktop/src/lib/types.ts) — adiciona o DTO `RegisterDeviceRequest`.
+- [desktop/src/lib/services/api.ts](../desktop/src/lib/services/api.ts) — expõe `api.registerDevice`.
+- [desktop/src/lib/services/device-registration.ts](../desktop/src/lib/services/device-registration.ts) — registra o device Windows do titular de forma idempotente, reutilizando device existente quando possível e persistindo o id em `localStorage`.
+- [desktop/src/lib/stores/auth.ts](../desktop/src/lib/stores/auth.ts) — dispara o registro do device após login/cadastro Firebase bem-sucedido, sem bloquear a sessão se a API falhar momentaneamente.
+- [desktop/src/lib/components/DeviceLinkCode.svelte](../desktop/src/lib/components/DeviceLinkCode.svelte) — garante o registro do device imediatamente antes de pedir um código parental.
+
+---
+
 ## Apêndice — Pastas que ainda não viraram código
 
 Algumas pastas existem como esqueleto mas não têm implementação completa no estado atual do branch `main`:
 
 - [mobile/](../mobile/) — o esqueleto Flutter (telas, providers Riverpod, channels Kotlin, AndroidManifest) foi gerado no Marco 1, mas a integração real (Firebase Android, VPN service funcional, SQLCipher Dart) ainda não foi concluída. Plano completo em [docs/DEVELOPMENT_GUIDE.md → Trilha Mobile](DEVELOPMENT_GUIDE.md) (Fases M1–M3).
-- [infra/](../infra/) — [compose.yml](../infra/compose.yml) sobe o backend em container, [firebase.json](../infra/firebase.json) e [firestore.rules](../infra/firestore.rules) descrevem a config Firebase, mas o deploy de produção (Azure Container Apps, listeners real-time do Firestore) ficou para a Fase B6 do guia de desenvolvimento.
+- [infra/](../infra/) — [compose.yml](../infra/compose.yml) descreve o container do backend, mas o [Dockerfile](../backend/Dockerfile) ainda não é buildável. [firebase.json](../infra/firebase.json) e [firestore.rules](../infra/firestore.rules) ficam como referência de Firebase; o deploy de produção ficou para a Fase B6 do guia de desenvolvimento.
 
 Para o escopo planejado dessas pastas, consulte:
-- [docs/PROTOTYPE.md](PROTOTYPE.md) — o que entra no v0.1 e o que fica para depois.
+- [docs/PROTOTYPE.md](PROTOTYPE.md) — objetivo do protótipo v0.2 e critérios de aceite.
 - [docs/ARCHITECTURE.md](ARCHITECTURE.md) — fluxo de dados cross-platform.
 - [docs/GAPS.md](GAPS.md) — débitos técnicos conhecidos.

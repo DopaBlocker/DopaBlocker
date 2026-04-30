@@ -1,4 +1,32 @@
-# DopaBlocker — Escopo do Protótipo (v0.1)
+# DopaBlocker — Escopo do Protótipo (v0.2)
+
+> **Status:** este documento descreve o **objetivo do protótipo v0.2**. A v0.2
+> ainda não está pronta. Um item só deve ser marcado como entregue quando
+> desktop e mobile estiverem funcionando, os modos Pessoal/Pais/Filhos
+> estiverem completos, e os fluxos de contas e bloqueio estiverem sem erros
+> conhecidos bloqueantes e testados no golden path.
+
+## Objetivo da v0.2
+
+Entregar um protótipo cross-platform realmente usável: **desktop Windows
+(Tauri/Svelte)** e **mobile Android (Flutter)** devem abrir, autenticar,
+sincronizar regras e aplicar bloqueios. A v0.2 fecha o ciclo que a v0.1 deixou
+como direção: não basta ter backend e desktop; o protótipo precisa provar o
+fluxo completo entre responsável, filho e dispositivos.
+
+### Definição de pronto
+
+- Desktop e mobile rodam sem erro de build/check/análise.
+- Modo Pessoal funciona em desktop e mobile.
+- Modo Pais funciona em desktop e mobile.
+- Modo Filhos funciona em desktop e mobile.
+- Sistema de contas funciona com email/senha, Google OAuth onde suportado, e
+  Device Token para filhos.
+- Sistema de bloqueio funciona no desktop via DNS Proxy/WFP e no mobile via
+  VPN/serviços Android.
+- Sync de blocklist entre conta, pai e filhos está testado.
+- Fluxos principais estão cobertos por testes automatizados e smoke tests
+  manuais documentados.
 
 ## Fluxo de Onboarding (3 opções na tela inicial)
 
@@ -53,7 +81,10 @@ Ao abrir o app pela primeira vez (desktop ou mobile), o usuário vê **três op�
 ## Regras importantes
 
 ### Uma conta, uma blocklist
-Toda blocklist é armazenada em `blocked_items` vinculada ao `user_id`. No modo parental, **todos os devices filhos da mesma conta compartilham a mesma blocklist**. Não é possível ter regras diferentes para cada filho no v0.1.
+Toda blocklist é armazenada em `blocked_items` vinculada ao `user_id`. No modo
+parental, **todos os devices filhos da mesma conta compartilham a mesma
+blocklist**. Não é necessário ter regras diferentes para cada filho na v0.2,
+salvo se isso virar requisito explícito antes do fechamento.
 
 ### Pai fica imune aos próprios bloqueios
 Quando o `User.mode = 'parental'`, o blocking engine **do device do pai** consulta o próprio `Device.is_child` antes de aplicar a blocklist:
@@ -68,11 +99,14 @@ Dispositivos da mesma conta (pai + filhos, ou múltiplos devices pessoais) sincr
 - O estado do filtro adulto (on/off)
 - A lista de dispositivos vinculados
 
-No v0.1 a sincronização usa polling a cada 30 segundos (ver [DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md) → Fase B5).
+Na v0.2, a sincronização precisa estar funcionando e testada entre desktop e
+mobile. O mecanismo pode continuar sendo polling curto via backend se o golden
+path ficar estável; listeners real-time ficam fora do escopo obrigatório até
+virarem necessidade comprovada.
 
 ---
 
-## Incluído no Protótipo
+## Escopo-alvo do Protótipo v0.2
 
 ### Sistema de Contas
 - Registro com email/senha (Pessoal e Pais)
@@ -80,12 +114,18 @@ No v0.1 a sincronização usa polling a cada 30 segundos (ver [DEVELOPMENT_GUIDE
 - Login com email/senha (Pessoal e Pais)
 - Firebase Authentication (só para Pessoal e Pais)
 - **Device Token** para filhos (sem Firebase)
+- Persistência segura da sessão no desktop e no mobile
+- Logout, revogação de filho e exclusão de conta sem deixar sessão local órfã
 
 ### Bloqueio de Sites/Apps
 - Adicionar/remover sites na blocklist
 - Adicionar/remover apps na blocklist (Android)
 - Botão de bloquear/desbloquear (imediato no modo pessoal)
 - Sincronização cross-device via backend
+- Desktop: bloqueio DNS por proxy local, proteção anti-bypass por WFP e página
+  local de bloqueio
+- Mobile: bloqueio por VPN local no Android e integração nativa suficiente para
+  aplicar a blocklist ativa
 
 ### Filtro de Conteúdo Adulto
 - Lista de domínios open-source (Steven Black / OISD)
@@ -93,9 +133,10 @@ No v0.1 a sincronização usa polling a cada 30 segundos (ver [DEVELOPMENT_GUIDE
 - Toggle on/off
 
 ### Modo Pessoal
-- Bloqueio no dispositivo local
-- Sincronização de regras entre desktop e mobile (mesma conta)
+- Bloqueio no dispositivo local em desktop e mobile
+- Sincronização de regras entre desktop e mobile na mesma conta
 - Desbloqueio imediato ao clicar
+- Reabertura do app preserva sessão, lista e estado do bloqueio
 
 ### Modo Pais
 - Conta Firebase do pai
@@ -103,20 +144,50 @@ No v0.1 a sincronização usa polling a cada 30 segundos (ver [DEVELOPMENT_GUIDE
 - Pai fica imune aos próprios blocks (ver "Regras importantes")
 - Geração de código de vinculação de 6 dígitos com TTL de 5 minutos
 - Lista de filhos vinculados
+- Revogação de filhos pela UI
+- Alterações feitas pelo pai chegam aos filhos no desktop e no mobile
 
 ### Modo Filhos
 - Nenhum cadastro/login — apenas o código de 6 dígitos
 - Device token em vez de Firebase JWT
 - Blocklist read-only (gerenciada pelo pai)
 - Aplicação dos bloqueios via DNS Proxy (desktop) ou VPN (mobile)
+- Sessão de filho persistida com segurança e validada no boot
+- Filho revogado pelo pai perde acesso no próximo ciclo de validação/sync
 
 ### Plataformas
 - Windows (desktop via Tauri)
 - Android (mobile via Flutter)
+- O protótipo v0.2 só fecha quando as duas plataformas estiverem verificadas
+  no golden path.
 
 ---
 
-## Fora do Protótipo (Futuro)
+## Critérios de Aceite e Testes
+
+### Checks automatizados mínimos
+- `cargo test` na raiz do monorepo
+- `pnpm --dir desktop check`
+- `flutter analyze` em `mobile/`
+- `flutter test` em `mobile/` quando houver widgets/providers testáveis
+
+### Smoke tests obrigatórios
+- Criar conta Pessoal, fazer login, adicionar item, ativar bloqueio, confirmar
+  bloqueio, pausar e confirmar desbloqueio.
+- Criar conta Pais, gerar código, vincular um dispositivo Filho e confirmar que
+  o filho entra sem Firebase.
+- No modo Pais, adicionar/remover item e confirmar que o filho recebe a regra.
+- Confirmar que o device do pai em modo parental continua imune aos próprios
+  bloqueios.
+- Revogar um filho e confirmar que o Device Token deixa de funcionar.
+- Reabrir desktop e mobile e confirmar restauração correta de sessão,
+  blocklist e estado do bloqueio.
+- Rodar o fluxo em desktop Windows e Android mobile antes de considerar a v0.2
+  concluída.
+
+---
+
+## Fora do Protótipo v0.2 (Futuro)
 
 - macOS / iOS
 - Linux
@@ -124,7 +195,9 @@ No v0.1 a sincronização usa polling a cada 30 segundos (ver [DEVELOPMENT_GUIDE
 - Horários programados de bloqueio
 - Relatórios de uso
 - Notificações push
-- **Blocklists diferentes por filho** (hoje todos compartilham a mesma)
+- **Blocklists diferentes por filho** (v0.2 mantém uma blocklist por conta,
+  aplicada a todos os filhos)
 - **Pai se auto-bloqueando no mesmo app** (hoje requer conta Pessoal separada)
 - **Rotação automática de device tokens** (hoje são válidos até o pai revogar)
-- Listeners real-time do Firestore (hoje usa polling)
+- Sincronização real-time dedicada, caso o polling via backend seja suficiente
+  para o protótipo

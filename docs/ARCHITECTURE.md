@@ -7,11 +7,14 @@ Monorepo com 4 sub-projetos: backend, desktop, mobile e shared.
 ## Fluxo de Dados
 
 ```
-[Mobile App (Flutter)] --HTTP/JWT ou dt_--> [Backend API (Axum)] --Firestore--> [Firebase Cloud]
-[Desktop App (Tauri)]  --HTTP/JWT ou dt_--> [Backend API (Axum)] --Firestore--> [Firebase Cloud]
+[Desktop App (Tauri)]  --HTTP/JWT ou dt_--> [Backend API (Axum)] --SQLCipher--> [dopablocker.db]
+[Mobile App (Flutter)] --HTTP/JWT ou dt_--> [Backend API (Axum)] --SQLCipher--> [dopablocker.db]
+[Firebase Auth]        --JWT/JWKS----------> [Backend API (Axum)]
 ```
 
-O backend aceita dois tipos de token no header `Authorization` (ver "Autenticação dual" abaixo). Todas as outras camadas funcionam de forma idêntica independentemente do tipo de token.
+O backend aceita dois tipos de token no header `Authorization` (ver "Autenticação dual" abaixo). A fonte de verdade dos dados de negócio hoje é o SQLCipher do backend; Firebase é usado para autenticação das contas Pessoal/Pais, não como banco da blocklist.
+
+**Estado atual:** backend, shared e desktop têm implementação funcional. O projeto mobile existe com estrutura Flutter/Kotlin, mas os providers, models, Firebase, SQLCipher Dart e serviços nativos ainda são placeholders para a v0.2.
 
 ---
 
@@ -99,9 +102,9 @@ O middleware extrai o header `Authorization`, inspeciona o prefixo, e chama a va
 - **Bloom Filter**: lookup rápido de domínios adultos (Steven Black / OISD)
 
 ### Android (Mobile)
-- **VPN Service**: intercepta tráfego DNS via TUN interface
-- **Accessibility Service**: detecta e bloqueia abertura de apps
-- **Boot Receiver**: reinicia VPN automaticamente após reboot
+- **VPN Service**: intercepta tráfego DNS via TUN interface (alvo v0.2; arquivo Kotlin ainda é placeholder)
+- **Accessibility Service**: detecta e bloqueia abertura de apps (alvo v0.2)
+- **Boot Receiver**: reinicia VPN automaticamente após reboot (alvo v0.2)
 
 ### Regra do "Pai imune"
 
@@ -117,7 +120,9 @@ senão se user.mode == 'parental':
         NÃO aplica nada (lista vazia)
 ```
 
-Consequência: no device do pai em modo parental, o DNS Proxy e o VPN Service permanecem ativos mas com blocklist vazia — deixando passar todo o tráfego. A blocklist é aplicada **apenas nos devices filhos**.
+Consequência: no device do pai em modo parental, o DNS Proxy (desktop atual) e
+o VPN Service (mobile v0.2) devem permanecer ativos com blocklist vazia —
+deixando passar todo o tráfego. A blocklist é aplicada **apenas nos devices filhos**.
 
 ---
 
@@ -128,11 +133,12 @@ Consequência: no device do pai em modo parental, o DNS Proxy e o VPN Service pe
 - Sem a chave (`PRAGMA key`), o arquivo é ilegível — protege contra acesso físico ao disco
 - Backend (Rust): `rusqlite` com feature `bundled-sqlcipher`
 - Desktop (Tauri): mesmo `rusqlite` com `bundled-sqlcipher`
-- Mobile (Flutter): `sqflite_sqlcipher` (drop-in replacement do `sqflite`)
+- Mobile (Flutter): planejado com `sqflite_sqlcipher`, ainda não implementado no `pubspec.yaml`
 
 ### Tabelas principais
 - `users`, `devices`, `blocked_items`, `parental_links`, `adult_filter_settings` (migration `001_initial.sql`)
 - `device_tokens` (migration `002_parental_fixes.sql`) — tokens de acesso dos devices filhos
+- `email_verifications` (migration `003_email_verification.sql`) — códigos e tokens curtos do cadastro por email/senha
 
 No device do filho, o backend não é consultado para auth (o device token é local). Mas as chamadas à API (blocklist, devices) continuam passando pelo backend normalmente, usando o device token como credencial.
 
@@ -141,9 +147,10 @@ No device do filho, o backend não é consultado para auth (o device token é lo
 ## Sincronização
 
 - SQLCipher local como cache offline criptografado em cada dispositivo
-- Firestore como fonte de verdade para sincronização cross-device
-- Backend API como intermediário para validação e lógica de negócios
-- Polling a cada 30 segundos no v0.1 (listeners real-time do Firestore ficam para v0.2)
+- SQLCipher do backend como fonte de verdade para sincronização cross-device
+- Backend API como intermediário para validação, lógica de negócios e auth dual
+- Desktop atual sincroniza por chamadas REST em carregamento/mutação de telas; polling periódico completo de blocklist entre dispositivos ainda é gap
+- Listeners real-time/Firestore não fazem parte da implementação atual
 
 ---
 
@@ -154,4 +161,4 @@ No device do filho, o backend não é consultado para auth (o device token é lo
 - Pai gerencia a blocklist que propaga para os dispositivos filhos
 - **Filho não cria conta** — usa device token gerado no momento da vinculação
 - **Pai fica imune** aos próprios blocks (ver "Regra do Pai imune" acima)
-- Única blocklist compartilhada entre todos os filhos de uma conta (limitação do v0.1)
+- Única blocklist compartilhada entre todos os filhos de uma conta (decisão mantida para o alvo v0.2)

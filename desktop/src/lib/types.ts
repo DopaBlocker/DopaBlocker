@@ -82,6 +82,11 @@ export interface CreateBlockedItemRequest {
 
 // ---- devices / parental ----
 
+export interface RegisterDeviceRequest {
+    device_name: string;
+    platform: Platform;
+}
+
 export interface GenerateLinkCodeResponse {
     code: string;
     expires_at: string;

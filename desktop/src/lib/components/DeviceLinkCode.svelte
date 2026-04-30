@@ -5,7 +5,10 @@
 -->
 <script lang="ts">
     import { onDestroy } from 'svelte';
+    import { get } from 'svelte/store';
     import { api, ApiError } from '$lib/services/api';
+    import { ensureOwnerDeviceRegistered } from '$lib/services/device-registration';
+    import { authStore } from '$lib/stores/auth';
     import { toast } from '$lib/stores/toast';
 
     interface Generated {
@@ -22,6 +25,10 @@
         if (generating) return;
         generating = true;
         try {
+            const auth = get(authStore);
+            if (auth.user?.id) {
+                await ensureOwnerDeviceRegistered(auth.user.id);
+            }
             const resp = await api.generateLinkCode();
             pending = resp;
             updateRemaining();
