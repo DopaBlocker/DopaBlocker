@@ -15,6 +15,10 @@
 //        Cloudflare, Google, Quad9, AdGuard, CleanBrowsing — cobre ~90%
 //        dos casos. Resolvers com IPs rotativos (NextDNS) escapam;
 //        pegar esses precisaria SNI inspection via callout driver kernel.
+//   5. UDP dst:443 → IPs de resolvers DoH conhecidos → BLOCK
+//        HTTP/3 (QUIC) sobre UDP/443. Browsers modernos preferem QUIC quando
+//        disponivel; sem este filtro, Chrome/Edge resolvem DoH via QUIC e
+//        o bloqueio nao tem efeito ate as conexoes caindo para fallback TCP.
 //
 // Sessão dinâmica: os filtros vivem enquanto o `engine` HANDLE estiver
 // aberto. Quando o processo morre (clean ou crash), o BFE do Windows
@@ -181,8 +185,12 @@ impl WfpSession {
         self.add_block_port_except_loopback(IPPROTO_TCP_U8, PORT_DNS, "block-tcp-53", &app_id)?;
         self.add_block_port(IPPROTO_TCP_U8, PORT_DOT, "block-dot-853", &app_id)?;
         for ip in DOH_IPV4 {
-            let name = format!("block-doh-{ip}");
-            self.add_block_tcp_to_ipv4(PORT_HTTPS, *ip, &name, &app_id)?;
+            let tcp_name = format!("block-doh-tcp-{ip}");
+            self.add_block_proto_to_ipv4(IPPROTO_TCP_U8, PORT_HTTPS, *ip, &tcp_name, &app_id)?;
+            // QUIC/HTTP3 sobre UDP/443 para os mesmos IPs — sem isso o
+            // browser cai pra DoH via QUIC e contorna o filtro TCP.
+            let udp_name = format!("block-doh-udp-{ip}");
+            self.add_block_proto_to_ipv4(IPPROTO_UDP_U8, PORT_HTTPS, *ip, &udp_name, &app_id)?;
         }
         Ok(())
     }
@@ -266,10 +274,11 @@ impl WfpSession {
         self.add_filter(name, &conditions)
     }
 
-    /// Filtro `BLOCK` específico: TCP porta 443 pra um IPv4 conhecido.
-    /// Um por IP de resolver DoH.
-    unsafe fn add_block_tcp_to_ipv4(
+    /// Filtro `BLOCK` específico: (protocolo, porta) pra um IPv4 conhecido.
+    /// Um por IP de resolver DoH × protocolo (TCP para HTTP/2, UDP para QUIC).
+    unsafe fn add_block_proto_to_ipv4(
         &self,
+        proto: u8,
         port: u16,
         target: Ipv4Addr,
         name: &str,
@@ -277,7 +286,7 @@ impl WfpSession {
     ) -> Result<()> {
         let ip_u32: u32 = u32::from(target);
         let conditions = [
-            cond_uint8(&FWPM_CONDITION_IP_PROTOCOL, FWP_MATCH_EQUAL, IPPROTO_TCP_U8),
+            cond_uint8(&FWPM_CONDITION_IP_PROTOCOL, FWP_MATCH_EQUAL, proto),
             cond_uint16(&FWPM_CONDITION_IP_REMOTE_PORT, FWP_MATCH_EQUAL, port),
             cond_uint32(&FWPM_CONDITION_IP_REMOTE_ADDRESS, FWP_MATCH_EQUAL, ip_u32),
             app_id.exclude_condition(),

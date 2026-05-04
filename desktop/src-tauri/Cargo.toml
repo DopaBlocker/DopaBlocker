@@ -32,6 +32,8 @@ thiserror = "1"
 keyring = { version = "3", features = ["windows-native"] }
 rand = "0.8"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 hickory-proto = "0.24"
 anyhow = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
@@ -50,4 +52,5 @@ windows = { version = "0.58", features = [
     "Win32_NetworkManagement_WindowsFilteringPlatform",
     "Win32_Networking_WinSock",
     "Win32_System_Rpc",
+    "Win32_System_Console",
 ] }

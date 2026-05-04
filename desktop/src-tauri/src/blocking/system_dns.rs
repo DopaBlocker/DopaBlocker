@@ -8,6 +8,8 @@
 // =============================================================================
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -19,6 +21,46 @@ use crate::db;
 const PROXY_IPV4: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 const PROXY_IPV6: IpAddr = IpAddr::V6(Ipv6Addr::LOCALHOST);
 const STATE_KEY: &str = "original_dns_config";
+
+// Snapshot paralelo em arquivo plano (NAO criptografado). Razao: o panic hook
+// e o SetConsoleCtrlHandler precisam restaurar o DNS de forma SINCRONA, sem
+// reabrir SQLCipher (que requer tokio + chave do Credential Manager). O
+// conteudo nao e sensivel — sao IPs DNS publicos + nomes de interfaces locais.
+const SNAPSHOT_FILENAME: &str = "dns_snapshot.json";
+
+// `data_dir` definido no setup do Tauri. Acessado pelo panic hook e pelo
+// SetConsoleCtrlHandler (que nao podem capturar ambiente). Inicializado
+// uma vez por `init_snapshot_dir`.
+static SNAPSHOT_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Registra o data dir do app. Chamar uma vez no setup, antes de qualquer
+/// `apply_and_remember`. Sem isso, o restore sincrono fica orfao.
+pub fn init_snapshot_dir(data_dir: PathBuf) {
+    let _ = SNAPSHOT_DIR.set(data_dir);
+}
+
+fn snapshot_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(SNAPSHOT_FILENAME)
+}
+
+fn write_snapshot_file(data_dir: &Path, snapshot: &[InterfaceDnsConfig]) -> Result<()> {
+    let path = snapshot_path(data_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).context("criar dir do snapshot")?;
+    }
+    let json = serde_json::to_string(snapshot).context("serializar snapshot file")?;
+    std::fs::write(&path, json).context("escrever snapshot file")?;
+    Ok(())
+}
+
+fn clear_snapshot_file(data_dir: &Path) {
+    let path = snapshot_path(data_dir);
+    if path.exists() {
+        if let Err(e) = std::fs::remove_file(&path) {
+            tracing::warn!(error = %e, path = %path.display(), "falha ao remover snapshot file");
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DnsFamily {
@@ -47,13 +89,20 @@ fn default_dns_family() -> DnsFamily {
 
 // -------- high-level orchestration -----------------------------------------
 
-pub async fn apply_and_remember(conn: &Connection) -> Result<()> {
+pub async fn apply_and_remember(conn: &Connection, data_dir: &Path) -> Result<()> {
     if !cfg!(target_os = "windows") {
         return Ok(());
     }
     let current = capture_current().await.context("capturar DNS atual")?;
     if current.is_empty() {
         bail!("nenhuma interface de rede ativa");
+    }
+
+    // Snapshot file PRIMEIRO — e a unica fonte que o panic hook /
+    // SetConsoleCtrlHandler conseguem ler de forma sincrona. Best-effort:
+    // se falhar, o caminho normal (DB + restore_if_any) ainda funciona.
+    if let Err(e) = write_snapshot_file(data_dir, &current) {
+        tracing::warn!(error = %e, "falha ao escrever snapshot file (recovery em panic pode falhar)");
     }
 
     let json = serde_json::to_string(&current).context("serializar snapshot")?;
@@ -63,26 +112,159 @@ pub async fn apply_and_remember(conn: &Connection) -> Result<()> {
 
     if let Err(apply_err) = apply_proxy_dns(&current).await {
         let _ = db::clear_state(conn, STATE_KEY).await;
+        clear_snapshot_file(data_dir);
         return Err(apply_err).context("aplicar proxy DNS");
     }
     Ok(())
 }
 
-pub async fn restore_if_any(conn: &Connection) -> Result<()> {
+pub async fn restore_if_any(conn: &Connection, data_dir: &Path) -> Result<()> {
     if !cfg!(target_os = "windows") {
         return Ok(());
     }
     let Some(json) = db::get_state(conn, STATE_KEY).await? else {
+        // Sem snapshot no DB. Mas pode existir um snapshot file orfao —
+        // limpa para manter os dois em sincronia.
+        clear_snapshot_file(data_dir);
         return Ok(());
     };
     if json.is_empty() {
+        clear_snapshot_file(data_dir);
         return Ok(());
     }
     let snapshot: Vec<InterfaceDnsConfig> =
         serde_json::from_str(&json).context("deserializar snapshot")?;
     restore_all(&snapshot).await;
     db::clear_state(conn, STATE_KEY).await?;
+    clear_snapshot_file(data_dir);
     flush_resolver_cache().await;
+    Ok(())
+}
+
+// -------- restore SINCRONO (panic hook / signal handler / RunEvent) --------
+//
+// Sem tokio, sem SQLCipher, sem keyring. Le o snapshot file (escrito em
+// paralelo com `db::set_state` em `apply_and_remember`) e roda netsh via
+// `std::process::Command` direto. Best-effort: erros vao para stderr porque
+// `tracing` pode estar em estado invalido (panic).
+
+/// Restaura DNS usando o `data_dir` registrado em `init_snapshot_dir`.
+/// Safe para chamar de panic hook ou de `extern "system" fn` (ctrl handler).
+pub fn restore_dns_blocking_global() {
+    let Some(dir) = SNAPSHOT_DIR.get() else {
+        eprintln!("[dopablocker] restore_dns_blocking: SNAPSHOT_DIR nao foi inicializado");
+        return;
+    };
+    restore_dns_blocking(dir);
+}
+
+/// Versao sincrona do restore. Le snapshot file, restaura cada interface via
+/// netsh sincrono, limpa o file. Idempotente: sem snapshot, no-op.
+pub fn restore_dns_blocking(data_dir: &Path) {
+    let path = snapshot_path(data_dir);
+    let json = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Sem snapshot — sem nada para restaurar. Caso comum quando o app
+            // sai sem nunca ter ligado o bloqueio.
+            return;
+        }
+        Err(e) => {
+            eprintln!(
+                "[dopablocker] restore_dns_blocking: falha ao ler {} ({})",
+                path.display(),
+                e
+            );
+            return;
+        }
+    };
+
+    let snapshot: Vec<InterfaceDnsConfig> = match serde_json::from_str(&json) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[dopablocker] restore_dns_blocking: snapshot file corrompido ({e})");
+            return;
+        }
+    };
+
+    for cfg in &snapshot {
+        if let Err(e) = restore_one_blocking(cfg) {
+            eprintln!(
+                "[dopablocker] restore_dns_blocking falhou para {} ({:?}): {}",
+                cfg.name, cfg.family, e
+            );
+        }
+    }
+
+    // Flush DNS cache do Windows — best-effort.
+    let _ = std::process::Command::new("ipconfig")
+        .args(["/flushdns"])
+        .output();
+
+    // Snapshot consumido — apaga.
+    let _ = std::fs::remove_file(&path);
+}
+
+fn restore_one_blocking(cfg: &InterfaceDnsConfig) -> Result<()> {
+    match cfg.source {
+        DnsSource::Dhcp => set_dhcp_blocking(cfg.family, &cfg.name),
+        DnsSource::Static => {
+            if cfg.servers.is_empty() {
+                return set_dhcp_blocking(cfg.family, &cfg.name);
+            }
+            set_static_primary_blocking(cfg.family, &cfg.name, cfg.servers[0])?;
+            for (i, ip) in cfg.servers.iter().enumerate().skip(1) {
+                netsh_blocking(&[
+                    "interface",
+                    family_label(cfg.family),
+                    "add",
+                    "dnsservers",
+                    &format!("name=\"{}\"", cfg.name),
+                    &ip.to_string(),
+                    &format!("index={}", i + 1),
+                ])?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn set_dhcp_blocking(family: DnsFamily, iface: &str) -> Result<()> {
+    netsh_blocking(&[
+        "interface",
+        family_label(family),
+        "set",
+        "dnsservers",
+        &format!("name=\"{iface}\""),
+        "source=dhcp",
+    ])
+}
+
+fn set_static_primary_blocking(family: DnsFamily, iface: &str, ip: IpAddr) -> Result<()> {
+    netsh_blocking(&[
+        "interface",
+        family_label(family),
+        "set",
+        "dnsservers",
+        &format!("name=\"{iface}\""),
+        "static",
+        &ip.to_string(),
+        "primary",
+        "validate=no",
+    ])
+}
+
+fn netsh_blocking(args: &[&str]) -> Result<()> {
+    let out = std::process::Command::new("netsh")
+        .args(args)
+        .output()
+        .context("spawn netsh (sync)")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let msg = if !stderr.is_empty() { stderr } else { stdout };
+        bail!("netsh falhou: {msg}");
+    }
     Ok(())
 }
 

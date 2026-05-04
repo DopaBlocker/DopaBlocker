@@ -2,11 +2,14 @@
 // Engine: orchestrates the local blocking stack.
 // =============================================================================
 // Start order matters:
-//   1. Load/install the local CA used by the HTTPS block page.
-//   2. Start block page HTTP (:80).
-//   3. Start block page HTTPS (:443).
-//   4. Start DNS proxy (:53), which redirects blocked domains to 127.0.0.1.
-//   5. Install WFP filters on Windows.
+//   1. Install WFP filters on Windows FIRST — fecha a janela onde o browser
+//      poderia falar 8.8.8.8:53 direto enquanto o resto do stack sobe.
+//      Filtros se auto-excluem para o proprio app via app_id, entao o DNS
+//      proxy abaixo continua podendo fazer queries upstream.
+//   2. Load/install the local CA used by the HTTPS block page.
+//   3. Start block page HTTP (:80).
+//   4. Start block page HTTPS (:443).
+//   5. Start DNS proxy (:53), which redirects blocked domains to 127.0.0.1.
 //
 // Each visible page layer is best-effort. If :443 is busy or the CA cannot be
 // installed, DNS blocking still works; the browser may just show its own error.
@@ -78,6 +81,20 @@ impl Engine {
         }
         self.dns_cache.clear().await;
 
+        // WFP PRIMEIRO. Filtra DNS plain/DoT/DoH antes mesmo do proxy levantar
+        // — sem isso, o browser teria uma janela de segundos para resolver
+        // direto. O app se auto-exclui via app_id (ver `exclude_condition` em
+        // `wfp.rs`), entao o proprio proxy continua podendo consultar upstream.
+        #[cfg(target_os = "windows")]
+        {
+            match super::wfp::WfpSession::install() {
+                Ok(session) => self.wfp = Some(session),
+                Err(e) => {
+                    tracing::warn!(error = %e, "WFP nao instalado; bloqueio fica so no DNS proxy");
+                }
+            }
+        }
+
         let ca = match LocalCa::load_or_create(&self.app_data_dir) {
             Ok(ca) => {
                 let ca = Arc::new(ca);
@@ -138,16 +155,6 @@ impl Engine {
         });
         self.dns_task = Some(dns_task);
         self.dns_shutdown = Some(dns_tx);
-
-        #[cfg(target_os = "windows")]
-        {
-            match super::wfp::WfpSession::install() {
-                Ok(session) => self.wfp = Some(session),
-                Err(e) => {
-                    tracing::warn!(error = %e, "WFP nao instalado; bloqueio fica so no DNS proxy");
-                }
-            }
-        }
 
         Ok(())
     }

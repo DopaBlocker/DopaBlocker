@@ -13,6 +13,14 @@
 //   5. Se `blocking_enabled=true` estava persistido, spawna uma task que
 //      restaura DNS órfão do crash anterior (se houver), reativa o engine
 //      e aplica DNS do sistema.
+//
+// Cleanup-de-DNS em saidas nao-graceful:
+//   - panic::set_hook -> restore sincrono via snapshot file
+//   - RunEvent::ExitRequested -> idem (cobre shutdown/logoff do Windows)
+//   - SetConsoleCtrlHandler (Windows) -> idem (ultima trincheira)
+//   - heal_orphan_dns SINCRONO no setup -> recovery se o app caiu antes
+//
+// Ver `blocking::system_dns::restore_dns_blocking_global` para detalhes.
 // =============================================================================
 
 mod blocking;
@@ -24,7 +32,7 @@ use std::{path::PathBuf, sync::Arc};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, WindowEvent,
+    AppHandle, Manager, RunEvent, WindowEvent,
 };
 use tokio::sync::Mutex;
 
@@ -37,7 +45,7 @@ pub struct AppPaths {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -47,9 +55,61 @@ pub fn run() {
                 )?;
             }
 
+            // Resolve data_dir cedo — usado pelo logging persistido, snapshot DNS
+            // e por tudo que precise do app data dir.
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir());
+            std::fs::create_dir_all(&data_dir).ok();
+
+            // Logging persistido em arquivo. Sem isso, debugar bug em producao
+            // (ex: panic durante shutdown) e impossivel — stderr some quando o
+            // processo morre. Rotacao diaria automatica.
+            let logs_dir = data_dir.join("logs");
+            std::fs::create_dir_all(&logs_dir).ok();
+            let file_appender = tracing_appender::rolling::daily(&logs_dir, "dopablocker.log");
+            // Guard precisa viver enquanto o app rodar — vazamos via Box::leak
+            // para nao precisar carregar pelo state. Aceitavel: 1 instancia.
+            let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+            Box::leak(Box::new(guard));
+            // Subscriber best-effort — se outro ja esta global (caso testes),
+            // try_init falha silenciosamente.
+            let _ = tracing_subscriber::fmt()
+                .with_writer(non_blocking)
+                .with_ansi(false)
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                )
+                .try_init();
+
+            // Inicializa SNAPSHOT_DIR para o restore sincrono. Tem que rodar
+            // antes do panic hook (caso contrario o hook nao acha o snapshot).
+            blocking::system_dns::init_snapshot_dir(data_dir.clone());
+
+            // Panic hook — qualquer panic durante o ciclo de vida do app
+            // restaura o DNS antes de propagar. Em release o `panic = unwind`
+            // (default Rust) garante execucao do hook.
+            install_panic_hook();
+
+            // Windows-only: SetConsoleCtrlHandler para CTRL_SHUTDOWN_EVENT etc.
+            #[cfg(target_os = "windows")]
+            install_ctrl_handler();
+
             // Boot síncrono do DB — só roda uma vez, antes da janela abrir.
             let handle = app.handle().clone();
             let conn = tauri::async_runtime::block_on(async move { db::init(&handle).await })?;
+
+            // Self-heal SINCRONO antes de qualquer outra coisa: se o app caiu
+            // antes com DNS apontando para 127.0.0.1, ja conserta agora — antes
+            // mesmo da janela aparecer. Depois disso o usuario nao ve "rede
+            // caida" enquanto o setup completa.
+            tauri::async_runtime::block_on(async {
+                if let Err(e) = blocking::system_dns::heal_orphan_dns().await {
+                    tracing::error!(error = %e, "self-heal sincrono de DNS orfao falhou");
+                }
+            });
 
             // Adult filter: carrega o estado persistido do DB (ligado/desligado)
             // e cria a instância. O Bloom Filter propriamente dito é construído
@@ -58,10 +118,6 @@ pub fn run() {
             let cache_dir = app
                 .path()
                 .app_cache_dir()
-                .unwrap_or_else(|_| std::env::temp_dir());
-            let data_dir = app
-                .path()
-                .app_data_dir()
                 .unwrap_or_else(|_| std::env::temp_dir());
             let persisted_adult_enabled = tauri::async_runtime::block_on(async {
                 db::get_adult_filter_enabled(&conn).await.unwrap_or(false)
@@ -86,8 +142,11 @@ pub fn run() {
             // correto e pode tentar de novo.
             let conn_resume = conn.clone();
             let engine_resume = engine.clone();
+            let data_dir_resume = data_dir.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = resume_engine_if_enabled(&conn_resume, &engine_resume).await {
+                if let Err(e) =
+                    resume_engine_if_enabled(&conn_resume, &engine_resume, &data_dir_resume).await
+                {
                     tracing::warn!(error = %e, "não foi possível reativar engine no boot");
                 }
             });
@@ -135,8 +194,59 @@ pub fn run() {
             commands::load_child_session,
             commands::clear_child_session,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    // Captura RunEvent::ExitRequested (e Exit) para garantir que o DNS volta
+    // ao normal mesmo em shutdown/logoff do Windows. Como o Tauri ja chamou
+    // `setup`, `init_snapshot_dir` foi chamado — `restore_dns_blocking_global`
+    // tem o data_dir.
+    app.run(|_app_handle, event| {
+        if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+            blocking::system_dns::restore_dns_blocking_global();
+        }
+    });
+}
+
+fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Restaura DNS PRIMEIRO. Se o panic for durante o boot (antes de
+        // SNAPSHOT_DIR ser inicializado), e no-op silencioso — nada de DNS
+        // foi alterado ainda.
+        blocking::system_dns::restore_dns_blocking_global();
+        // Encadeia o hook anterior para preservar o stack trace padrao.
+        prev(info);
+    }));
+}
+
+#[cfg(target_os = "windows")]
+fn install_ctrl_handler() {
+    use windows::Win32::Foundation::BOOL;
+    use windows::Win32::System::Console::{
+        SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT,
+        CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+    };
+
+    unsafe extern "system" fn handler(ctrl_type: u32) -> BOOL {
+        // Em qualquer evento de saida, restaura o DNS. Retorna FALSE para
+        // deixar o handler default tambem rodar — ele eventualmente termina
+        // o processo.
+        match ctrl_type {
+            CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT
+            | CTRL_SHUTDOWN_EVENT => {
+                blocking::system_dns::restore_dns_blocking_global();
+                BOOL(0) // FALSE — chain to default
+            }
+            _ => BOOL(0),
+        }
+    }
+
+    unsafe {
+        if SetConsoleCtrlHandler(Some(handler), true).is_err() {
+            tracing::warn!("SetConsoleCtrlHandler falhou; cleanup em shutdown pode nao rodar");
+        }
+    }
 }
 
 fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
@@ -198,8 +308,9 @@ fn shutdown_blocking_and_exit(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let conn = app.state::<tokio_rusqlite::Connection>().inner().clone();
         let engine = app.state::<Arc<Mutex<Engine>>>().inner().clone();
+        let paths = app.state::<AppPaths>().inner().clone();
 
-        if let Err(e) = blocking::system_dns::restore_if_any(&conn).await {
+        if let Err(e) = blocking::system_dns::restore_if_any(&conn, &paths.data_dir).await {
             tracing::error!(error = %e, "falha ao restaurar DNS ao sair pelo tray");
         }
 
@@ -219,21 +330,11 @@ fn shutdown_blocking_and_exit(app: AppHandle) {
 async fn resume_engine_if_enabled(
     conn: &tokio_rusqlite::Connection,
     engine: &Mutex<Engine>,
+    data_dir: &std::path::Path,
 ) -> anyhow::Result<()> {
-    // Passo 0: self-heal independente de snapshot. Se alguma interface
-    // ainda esta apontando pra 127.0.0.1 (zumbi), forcamos DHCP. Roda
-    // ANTES de qualquer outra coisa — garante que mesmo um snapshot
-    // perdido no DB ou um restore que falha nao impede self-recovery.
-    if let Err(e) = blocking::system_dns::heal_orphan_dns().await {
-        tracing::error!(error = %e, "self-heal de DNS orfao falhou");
-    }
-
-    // Passo 1: tenta o restore baseado no snapshot persistido — se houver.
-    // Cenário: app crashou com bloqueio ativo → DNS do sistema ainda está
-    // apontando pro proxy que morreu → o OS fica sem resolver. Aqui,
-    // colocamos DNS de volta no que era, limpamos a snapshot, e só depois
-    // decidimos se reativamos o engine (que fará uma captura fresca).
-    let restore_failed = match blocking::system_dns::restore_if_any(conn).await {
+    // O `heal_orphan_dns` ja rodou SINCRONO no setup. Aqui, complementa: faz
+    // o `restore_if_any` (que precisa de conn) e depois reativa o engine.
+    let restore_failed = match blocking::system_dns::restore_if_any(conn, data_dir).await {
         Ok(()) => false,
         Err(e) => {
             tracing::error!(error = %e, "falha ao restaurar DNS no boot — desativando bloqueio por seguranca");
@@ -289,7 +390,7 @@ async fn resume_engine_if_enabled(
     // Engine de pé — agora captura o DNS atual (já restaurado acima, então
     // é o "de verdade") e aponta pro proxy. Se falhar, desliga tudo pra não
     // deixar bloqueio meio-ativo.
-    if let Err(e) = blocking::system_dns::apply_and_remember(conn).await {
+    if let Err(e) = blocking::system_dns::apply_and_remember(conn, data_dir).await {
         tracing::warn!(error = %e, "falha ao reaplicar DNS no resume — revertendo");
         let mut eng = engine.lock().await;
         eng.stop().await;

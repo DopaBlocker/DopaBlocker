@@ -185,6 +185,7 @@ pub async fn cache_remove_item(
 pub async fn set_blocking_enabled(
     conn: State<'_, Connection>,
     engine: State<'_, Arc<Mutex<Engine>>>,
+    paths: State<'_, AppPaths>,
     user_id: String,
     enabled: bool,
     parental: Option<ParentalContext>,
@@ -209,7 +210,7 @@ pub async fn set_blocking_enabled(
 
         // 2. Aponta o DNS do sistema pro proxy. Se falhar (tipicamente admin),
         //    rollback no engine — melhor desligado do que meio-configurado.
-        if let Err(e) = system_dns::apply_and_remember(&conn).await {
+        if let Err(e) = system_dns::apply_and_remember(&conn, &paths.data_dir).await {
             let mut eng = engine.lock().await;
             eng.stop().await;
             return Err(format!("falha ao trocar DNS do sistema: {e}"));
@@ -218,7 +219,7 @@ pub async fn set_blocking_enabled(
         // Ordem importa: restaura o DNS ANTES de matar o proxy. Se matasse
         // primeiro, haveria uma janela de segundos em que o sistema ainda
         // aponta pra 127.0.0.1:53 mas ninguém está escutando → DNS quebrado.
-        if let Err(e) = system_dns::restore_if_any(&conn).await {
+        if let Err(e) = system_dns::restore_if_any(&conn, &paths.data_dir).await {
             tracing::error!(error = %e, "falha ao restaurar DNS — seguindo pra parar engine");
         }
         let mut eng = engine.lock().await;
