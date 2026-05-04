@@ -1,0 +1,75 @@
+# =============================================================================
+# DopaBlocker — FQDNs de provedores DoH/DoT conhecidos.
+# =============================================================================
+# Bloqueados pelo DNS proxy (block_reason::is_doh_endpoint). Match por sufixo:
+# entrada `dns.google` bloqueia tambem `*.dns.google`.
+#
+# Esta lista NAO contem TLDs ou domínios de uso geral. So FQDNs que sao
+# inequivocamente endpoints DoH/DoT — bloqueio acidental seria bug.
+#
+# Ultima atualizacao manual: 2026-05-04
+# =============================================================================
+
+# ---------- Cloudflare ----------
+cloudflare-dns.com
+one.one.one.one
+1dot1dot1dot1.cloudflare-dns.com
+security.cloudflare-dns.com
+family.cloudflare-dns.com
+
+# ---------- Google ----------
+dns.google
+dns64.dns.google
+
+# ---------- Quad9 ----------
+dns.quad9.net
+dns9.quad9.net
+dns10.quad9.net
+dns11.quad9.net
+
+# ---------- AdGuard DNS ----------
+dns.adguard.com
+dns.adguard-dns.com
+dns-family.adguard.com
+unfiltered.adguard-dns.com
+family.adguard-dns.com
+
+# ---------- CleanBrowsing ----------
+doh.cleanbrowsing.org
+doh-family.cleanbrowsing.org
+doh-adult.cleanbrowsing.org
+
+# ---------- OpenDNS ----------
+doh.opendns.com
+doh.familyshield.opendns.com
+resolver1.opendns.com
+resolver2.opendns.com
+
+# ---------- NextDNS ----------
+dns.nextdns.io
+
+# ---------- DNS.SB ----------
+doh.dns.sb
+dns.sb
+
+# ---------- LibreDNS ----------
+doh.libredns.gr
+
+# ---------- Mullvad ----------
+doh.mullvad.net
+adblock.doh.mullvad.net
+base.doh.mullvad.net
+extended.doh.mullvad.net
+family.doh.mullvad.net
+
+# ---------- Control D ----------
+dns.controld.com
+freedns.controld.com
+
+# ---------- Yandex ----------
+common.dot.dns.yandex.net
+secure.dot.dns.yandex.net
+family.dot.dns.yandex.net
+common.dns.yandex.net
+secure.dns.yandex.net
+family.dns.yandex.net

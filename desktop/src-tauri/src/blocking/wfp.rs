@@ -7,18 +7,24 @@
 //     mercados — nossas respostas DNS nunca chegam a ser consultadas.
 //   - Algum malware/VPN hardcoda 8.8.8.8:53.
 //
-// Filtros instalados:
-//   1. UDP dst:53 ≠ 127.0.0.1 → BLOCK    (DNS plain-text fora do proxy)
-//   2. TCP dst:53 ≠ 127.0.0.1 → BLOCK    (idem, via TCP)
-//   3. TCP dst:853             → BLOCK   (DoT — DNS over TLS)
-//   4. TCP dst:443 → IPs de resolvers DoH conhecidos → BLOCK
-//        Cloudflare, Google, Quad9, AdGuard, CleanBrowsing — cobre ~90%
-//        dos casos. Resolvers com IPs rotativos (NextDNS) escapam;
-//        pegar esses precisaria SNI inspection via callout driver kernel.
-//   5. UDP dst:443 → IPs de resolvers DoH conhecidos → BLOCK
-//        HTTP/3 (QUIC) sobre UDP/443. Browsers modernos preferem QUIC quando
-//        disponivel; sem este filtro, Chrome/Edge resolvem DoH via QUIC e
-//        o bloqueio nao tem efeito ate as conexoes caindo para fallback TCP.
+// Filtros instalados (espelhados em V4 + V6):
+//   1. UDP dst:53 ≠ ::1/127.0.0.1 → BLOCK    (DNS plain-text fora do proxy)
+//   2. TCP dst:53 ≠ ::1/127.0.0.1 → BLOCK    (idem, via TCP)
+//   3. TCP dst:853                → BLOCK    (DoT — DNS over TLS)
+//   4. TCP dst:443 → IPs DoH conhecidos → BLOCK   (DoH HTTP/2)
+//        Lista curada bundled em `shared/data/doh-ipv{4,6}.txt`. Cobre os
+//        provedores publicos (Cloudflare, Google, Quad9, AdGuard, NextDNS,
+//        Mullvad, OpenDNS, etc.). Self-hosted ou IPs nao listados escapam —
+//        gap residual aceito; SNI inspection via driver kernel fica para v1.0+.
+//   5. UDP dst:443 → IPs DoH conhecidos → BLOCK   (HTTP/3 / QUIC)
+//        Browsers modernos preferem QUIC quando disponivel; sem este filtro,
+//        Chrome/Edge resolvem DoH via QUIC e o bloqueio nao tem efeito ate as
+//        conexoes caindo para fallback TCP.
+//
+// IPv6: cada filtro acima e instalado tambem em FWPM_LAYER_ALE_AUTH_CONNECT_V6
+// usando FWP_BYTE_ARRAY16 (16 bytes em network byte order). Sem esses filtros,
+// redes que entregam IPv6 (Wi-Fi residencial moderno, mobile) deixariam DNS/
+// DoH passar direto.
 //
 // Sessão dinâmica: os filtros vivem enquanto o `engine` HANDLE estiver
 // aberto. Quando o processo morre (clean ou crash), o BFE do Windows
@@ -36,7 +42,7 @@
 #![cfg(target_os = "windows")]
 
 use std::mem::zeroed;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr;
 
@@ -48,8 +54,9 @@ use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{
     FwpmProviderAdd0, FwpmSubLayerAdd0, FwpmTransactionAbort0, FwpmTransactionBegin0,
     FwpmTransactionCommit0, FWPM_ACTION0, FWPM_CONDITION_ALE_APP_ID, FWPM_CONDITION_IP_PROTOCOL,
     FWPM_CONDITION_IP_REMOTE_ADDRESS, FWPM_CONDITION_IP_REMOTE_PORT, FWPM_DISPLAY_DATA0,
-    FWPM_FILTER0, FWPM_FILTER_CONDITION0, FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_PROVIDER0,
-    FWPM_SESSION0, FWPM_SESSION_FLAG_DYNAMIC, FWPM_SUBLAYER0, FWP_ACTION_BLOCK, FWP_BYTE_BLOB,
+    FWPM_FILTER0, FWPM_FILTER_CONDITION0, FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+    FWPM_LAYER_ALE_AUTH_CONNECT_V6, FWPM_PROVIDER0, FWPM_SESSION0, FWPM_SESSION_FLAG_DYNAMIC,
+    FWPM_SUBLAYER0, FWP_ACTION_BLOCK, FWP_BYTE_ARRAY16, FWP_BYTE_ARRAY16_TYPE, FWP_BYTE_BLOB,
     FWP_BYTE_BLOB_TYPE, FWP_CONDITION_VALUE0, FWP_CONDITION_VALUE0_0, FWP_EMPTY, FWP_MATCH_EQUAL,
     FWP_MATCH_NOT_EQUAL, FWP_MATCH_TYPE, FWP_UINT16, FWP_UINT32, FWP_UINT8, FWP_VALUE0,
     FWP_VALUE0_0,
@@ -77,19 +84,45 @@ const IPPROTO_UDP_U8: u8 = 17;
 // an IPv4 address, in host byte order").
 const LOOPBACK_V4: u32 = 0x7F00_0001;
 
-/// IPs v4 de resolvers DoH conhecidos. Cobertura boa: Cloudflare, Google,
-/// Quad9, AdGuard, CleanBrowsing.
-const DOH_IPV4: &[Ipv4Addr] = &[
-    Ipv4Addr::new(1, 1, 1, 1),         // Cloudflare primary
-    Ipv4Addr::new(1, 0, 0, 1),         // Cloudflare secondary
-    Ipv4Addr::new(8, 8, 8, 8),         // Google primary
-    Ipv4Addr::new(8, 8, 4, 4),         // Google secondary
-    Ipv4Addr::new(9, 9, 9, 9),         // Quad9 primary
-    Ipv4Addr::new(149, 112, 112, 112), // Quad9 secondary
-    Ipv4Addr::new(94, 140, 14, 14),    // AdGuard primary
-    Ipv4Addr::new(94, 140, 15, 15),    // AdGuard secondary
-    Ipv4Addr::new(185, 228, 168, 168), // CleanBrowsing
-];
+// Loopback IPv6: ::1 em network byte order. FWP_BYTE_ARRAY16 espera os 16
+// bytes do endereço diretamente (igual ao header IP).
+const LOOPBACK_V6: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+
+/// Lista bundled de IPs IPv4 de resolvers DoH conhecidos.
+/// Curada manualmente em `shared/data/doh-ipv4.txt` — atualizar via PR.
+const DOH_IPV4_RAW: &str = include_str!("../../../../shared/data/doh-ipv4.txt");
+
+/// Idem para IPv6.
+const DOH_IPV6_RAW: &str = include_str!("../../../../shared/data/doh-ipv6.txt");
+
+/// Parser tolerante a comentarios (`#`) e linhas vazias. IPs invalidos sao
+/// pulados silenciosamente — o build NAO falha porque o arquivo e atualizado
+/// manualmente e queremos resiliencia a bagunca pequena.
+fn parse_ipv4_list(raw: &str) -> Vec<Ipv4Addr> {
+    raw.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                None
+            } else {
+                trimmed.parse::<Ipv4Addr>().ok()
+            }
+        })
+        .collect()
+}
+
+fn parse_ipv6_list(raw: &str) -> Vec<Ipv6Addr> {
+    raw.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                None
+            } else {
+                trimmed.parse::<Ipv6Addr>().ok()
+            }
+        })
+        .collect()
+}
 
 pub struct WfpSession {
     engine: HANDLE,
@@ -180,17 +213,58 @@ impl WfpSession {
         self.add_provider()?;
         self.add_sublayer()?;
 
-        // Todos são BLOCK no mesmo sublayer — match de qualquer um bloqueia.
-        self.add_block_port_except_loopback(IPPROTO_UDP_U8, PORT_DNS, "block-udp-53", &app_id)?;
-        self.add_block_port_except_loopback(IPPROTO_TCP_U8, PORT_DNS, "block-tcp-53", &app_id)?;
-        self.add_block_port(IPPROTO_TCP_U8, PORT_DOT, "block-dot-853", &app_id)?;
-        for ip in DOH_IPV4 {
-            let tcp_name = format!("block-doh-tcp-{ip}");
+        let doh_v4 = parse_ipv4_list(DOH_IPV4_RAW);
+        let doh_v6 = parse_ipv6_list(DOH_IPV6_RAW);
+        tracing::info!(
+            ipv4 = doh_v4.len(),
+            ipv6 = doh_v6.len(),
+            "WFP: lista DoH carregada"
+        );
+
+        // ----- IPv4 -----
+        self.add_block_port_except_loopback(IPPROTO_UDP_U8, PORT_DNS, "block-udp-53-v4", &app_id)?;
+        self.add_block_port_except_loopback(IPPROTO_TCP_U8, PORT_DNS, "block-tcp-53-v4", &app_id)?;
+        self.add_block_port(
+            IPPROTO_TCP_U8,
+            PORT_DOT,
+            "block-dot-853-v4",
+            FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+            &app_id,
+        )?;
+        for ip in &doh_v4 {
+            let tcp_name = format!("block-doh-tcp-v4-{ip}");
             self.add_block_proto_to_ipv4(IPPROTO_TCP_U8, PORT_HTTPS, *ip, &tcp_name, &app_id)?;
             // QUIC/HTTP3 sobre UDP/443 para os mesmos IPs — sem isso o
             // browser cai pra DoH via QUIC e contorna o filtro TCP.
-            let udp_name = format!("block-doh-udp-{ip}");
+            let udp_name = format!("block-doh-udp-v4-{ip}");
             self.add_block_proto_to_ipv4(IPPROTO_UDP_U8, PORT_HTTPS, *ip, &udp_name, &app_id)?;
+        }
+
+        // ----- IPv6 -----
+        self.add_block_port_v6_except_loopback(
+            IPPROTO_UDP_U8,
+            PORT_DNS,
+            "block-udp-53-v6",
+            &app_id,
+        )?;
+        self.add_block_port_v6_except_loopback(
+            IPPROTO_TCP_U8,
+            PORT_DNS,
+            "block-tcp-53-v6",
+            &app_id,
+        )?;
+        self.add_block_port(
+            IPPROTO_TCP_U8,
+            PORT_DOT,
+            "block-dot-853-v6",
+            FWPM_LAYER_ALE_AUTH_CONNECT_V6,
+            &app_id,
+        )?;
+        for ip in &doh_v6 {
+            let tcp_name = format!("block-doh-tcp-v6-{ip}");
+            self.add_block_proto_to_ipv6(IPPROTO_TCP_U8, PORT_HTTPS, *ip, &tcp_name, &app_id)?;
+            let udp_name = format!("block-doh-udp-v6-{ip}");
+            self.add_block_proto_to_ipv6(IPPROTO_UDP_U8, PORT_HTTPS, *ip, &udp_name, &app_id)?;
         }
         Ok(())
     }
@@ -236,8 +310,8 @@ impl WfpSession {
         )
     }
 
-    /// Filtro `BLOCK` para (protocolo, porta-destino) se o endereço remoto
-    /// ≠ loopback. Usado pro DNS tradicional (53 TCP+UDP).
+    /// Filtro `BLOCK` IPv4 para (protocolo, porta-destino) se o endereço remoto
+    /// ≠ 127.0.0.1. Usado pro DNS tradicional (53 TCP+UDP).
     unsafe fn add_block_port_except_loopback(
         &self,
         proto: u8,
@@ -255,15 +329,45 @@ impl WfpSession {
             ),
             app_id.exclude_condition(),
         ];
-        self.add_filter(name, &conditions)
+        self.add_filter_at_layer(name, FWPM_LAYER_ALE_AUTH_CONNECT_V4, &conditions)
     }
 
-    /// Filtro `BLOCK` bruto: (protocolo, porta-destino). Usado pro DoT (853).
+    /// Filtro `BLOCK` IPv6 para (protocolo, porta-destino) se o endereço remoto
+    /// ≠ ::1. O ponteiro do FWP_BYTE_ARRAY16 precisa viver ate FwpmFilterAdd0
+    /// retornar — `loopback` esta na pilha desta funcao, sobrevive a FFI sync.
+    unsafe fn add_block_port_v6_except_loopback(
+        &self,
+        proto: u8,
+        port: u16,
+        name: &str,
+        app_id: &CurrentAppId,
+    ) -> Result<()> {
+        let mut loopback = FWP_BYTE_ARRAY16 {
+            byteArray16: LOOPBACK_V6,
+        };
+        let conditions = [
+            cond_uint8(&FWPM_CONDITION_IP_PROTOCOL, FWP_MATCH_EQUAL, proto),
+            cond_uint16(&FWPM_CONDITION_IP_REMOTE_PORT, FWP_MATCH_EQUAL, port),
+            cond_byte_array16(
+                &FWPM_CONDITION_IP_REMOTE_ADDRESS,
+                FWP_MATCH_NOT_EQUAL,
+                &mut loopback,
+            ),
+            app_id.exclude_condition(),
+        ];
+        self.add_filter_at_layer(name, FWPM_LAYER_ALE_AUTH_CONNECT_V6, &conditions)
+    }
+
+    /// Filtro `BLOCK` bruto: (protocolo, porta-destino), em qualquer layer.
+    /// Usado pro DoT (853) — bloqueamos a porta independente do destino,
+    /// porque DoT so e legitimo se for resolver publico (que ja queremos
+    /// bloquear) e nada mais usa a 853.
     unsafe fn add_block_port(
         &self,
         proto: u8,
         port: u16,
         name: &str,
+        layer: GUID,
         app_id: &CurrentAppId,
     ) -> Result<()> {
         let conditions = [
@@ -271,7 +375,7 @@ impl WfpSession {
             cond_uint16(&FWPM_CONDITION_IP_REMOTE_PORT, FWP_MATCH_EQUAL, port),
             app_id.exclude_condition(),
         ];
-        self.add_filter(name, &conditions)
+        self.add_filter_at_layer(name, layer, &conditions)
     }
 
     /// Filtro `BLOCK` específico: (protocolo, porta) pra um IPv4 conhecido.
@@ -291,10 +395,40 @@ impl WfpSession {
             cond_uint32(&FWPM_CONDITION_IP_REMOTE_ADDRESS, FWP_MATCH_EQUAL, ip_u32),
             app_id.exclude_condition(),
         ];
-        self.add_filter(name, &conditions)
+        self.add_filter_at_layer(name, FWPM_LAYER_ALE_AUTH_CONNECT_V4, &conditions)
     }
 
-    unsafe fn add_filter(&self, name: &str, conditions: &[FWPM_FILTER_CONDITION0]) -> Result<()> {
+    /// Idem para IPv6. `target.octets()` ja entrega network byte order.
+    unsafe fn add_block_proto_to_ipv6(
+        &self,
+        proto: u8,
+        port: u16,
+        target: Ipv6Addr,
+        name: &str,
+        app_id: &CurrentAppId,
+    ) -> Result<()> {
+        let mut target_bytes = FWP_BYTE_ARRAY16 {
+            byteArray16: target.octets(),
+        };
+        let conditions = [
+            cond_uint8(&FWPM_CONDITION_IP_PROTOCOL, FWP_MATCH_EQUAL, proto),
+            cond_uint16(&FWPM_CONDITION_IP_REMOTE_PORT, FWP_MATCH_EQUAL, port),
+            cond_byte_array16(
+                &FWPM_CONDITION_IP_REMOTE_ADDRESS,
+                FWP_MATCH_EQUAL,
+                &mut target_bytes,
+            ),
+            app_id.exclude_condition(),
+        ];
+        self.add_filter_at_layer(name, FWPM_LAYER_ALE_AUTH_CONNECT_V6, &conditions)
+    }
+
+    unsafe fn add_filter_at_layer(
+        &self,
+        name: &str,
+        layer: GUID,
+        conditions: &[FWPM_FILTER_CONDITION0],
+    ) -> Result<()> {
         let mut display_name = to_u16(name);
         let mut display_desc = to_u16("Filtro DopaBlocker");
 
@@ -308,7 +442,7 @@ impl WfpSession {
         let mut provider_guid = PROVIDER_GUID;
         filter.providerKey = &mut provider_guid as *mut GUID;
 
-        filter.layerKey = FWPM_LAYER_ALE_AUTH_CONNECT_V4;
+        filter.layerKey = layer;
         filter.subLayerKey = SUBLAYER_GUID;
 
         // weight type=EMPTY → WFP escolhe peso dentro do sublayer.
@@ -415,6 +549,26 @@ fn cond_uint32(field_key: &GUID, match_type: FWP_MATCH_TYPE, value: u32) -> FWPM
         conditionValue: FWP_CONDITION_VALUE0 {
             r#type: FWP_UINT32,
             Anonymous: FWP_CONDITION_VALUE0_0 { uint32: value },
+        },
+    }
+}
+
+/// Condicao para enderecos IPv6. WFP usa `*mut FWP_BYTE_ARRAY16` (ponteiro
+/// para 16 bytes) — diferente das demais que sao inline. O caller precisa
+/// garantir que `bytes` viva ate FwpmFilterAdd0 retornar.
+fn cond_byte_array16(
+    field_key: &GUID,
+    match_type: FWP_MATCH_TYPE,
+    bytes: &mut FWP_BYTE_ARRAY16,
+) -> FWPM_FILTER_CONDITION0 {
+    FWPM_FILTER_CONDITION0 {
+        fieldKey: *field_key,
+        matchType: match_type,
+        conditionValue: FWP_CONDITION_VALUE0 {
+            r#type: FWP_BYTE_ARRAY16_TYPE,
+            Anonymous: FWP_CONDITION_VALUE0_0 {
+                byteArray16: bytes as *mut FWP_BYTE_ARRAY16,
+            },
         },
     }
 }

@@ -8,11 +8,9 @@ em várias partes, o mobile ainda é esqueleto, e Docker/produção seguem pende
 
 ## Críticos — eficácia do bloqueio
 
-| # | Gap | Onde | Impacto | Saída sugerida |
-|---|-----|------|---------|----------------|
-| C1 | **WFP ainda só instala filtros IPv4** | [blocking/wfp.rs](../desktop/src-tauri/src/blocking/wfp.rs) usa `FWPM_LAYER_ALE_AUTH_CONNECT_V4` | DNS/DoH via IPv6 pode escapar dos filtros kernel-level | Adicionar filtros `_V6`, loopback `::1` e IPs DoH IPv6 |
-| C2 | **DoH sem SNI inspection** | [blocking/wfp.rs](../desktop/src-tauri/src/blocking/wfp.rs) bloqueia DoH só por IP estático | Resolvers com IP rotativo/self-hosted podem escapar | Callout driver kernel-mode ou outra estratégia de inspeção TLS |
-| C3 | **Sem DoQ explícito** | UDP/443 não é filtrado especificamente | DNS-over-QUIC para IP não conhecido pode passar | Adicionar regra UDP/443 para resolvers conhecidos e avaliar falso positivo |
+Todos os gaps criticos da v0.1 foram fechados. Plano historico em [WFP_HARDENING.md](WFP_HARDENING.md).
+
+Limitacao residual aceita: resolvers DoH self-hosted com IP+FQDN customizados, ou tunneis VPN com DNS embarcado, ainda podem escapar. SNI inspection via driver kernel-mode fica para v1.0+ se ROI justificar — ver [WFP_HARDENING.md § C2 "O que nao pega"](WFP_HARDENING.md).
 
 ---
 
@@ -99,7 +97,6 @@ em várias partes, o mobile ainda é esqueleto, e Docker/produção seguem pende
 | D4 | Sem auto-updater Tauri |
 | D5 | Sem crash reporter |
 | D6 | Sem métricas opt-in |
-| D7 | Sem logs persistidos em arquivo |
 | D8 | Sem SBOM/audit trail (`cargo audit`, `pnpm audit`) em CI |
 | D9 | Backend só tem `/health` textual, sem `/healthz` estruturado |
 
@@ -131,11 +128,16 @@ em várias partes, o mobile ainda é esqueleto, e Docker/produção seguem pende
 - UI já mostra estado de build do filtro adulto.
 - Logout no settings usa confirmação.
 - Email/senha agora passa por verificação de código antes do cadastro local.
+- **C1: Filtros WFP IPv6** — [blocking/wfp.rs](../desktop/src-tauri/src/blocking/wfp.rs) agora espelha todos os filtros V4 em `FWPM_LAYER_ALE_AUTH_CONNECT_V6`. Adicionados helpers `cond_byte_array16`, `add_block_port_v6_except_loopback`, `add_block_proto_to_ipv6` + constante `LOOPBACK_V6`. Refatorou `add_filter` → `add_filter_at_layer(name, layer, conditions)` para reuso. DNS/DoH via IPv6 nao bypassa mais.
+- **C2: Lista curada de IPs DoH + FQDN block** — Frente A: WFP carrega `shared/data/doh-ipv4.txt` (~50 IPs) e `shared/data/doh-ipv6.txt` (~20 IPs) via `include_str!`, bloqueando TCP/443 e UDP/443. Frente B: [blocking/block_reason.rs](../desktop/src-tauri/src/blocking/block_reason.rs) carrega `shared/data/doh-fqdns.txt` (~30 FQDNs) e adiciona `BlockReason::DohEndpoint` que checa antes de UserList — bloqueia resolucao do FQDN do provedor mesmo que o IP nao esteja na lista. Plano completo em [WFP_HARDENING.md § C2](WFP_HARDENING.md).
+- **C3: DoQ explícito** — [blocking/wfp.rs](../desktop/src-tauri/src/blocking/wfp.rs) instala filtros UDP/443 (HTTP/3 / QUIC) para todos os IPs DoH conhecidos, fechando o caminho de bypass via QUIC. Plano completo em [WFP_HARDENING.md § C3](WFP_HARDENING.md).
+- **D7: Logs persistidos** — [desktop/src-tauri/src/lib.rs](../desktop/src-tauri/src/lib.rs) usa `tracing-appender` com rotação diária em `app_data/logs/dopablocker.log`. Cobertura completa do panic hook + RunEvent + ctrl handler para diagnóstico de incidentes em produção.
+- **DNS órfão após crash** — Cleanup defensivo em panic hook (`std::panic::set_hook`), `RunEvent::ExitRequested`/`Exit`, `SetConsoleCtrlHandler` (Windows) e `heal_orphan_dns` síncrono no setup. Cobre crash, kill, shutdown abrupto e reboot do Windows Update. Snapshot DNS paralelo em `app_data/dns_snapshot.json` para restore síncrono sem SQLCipher/tokio.
 
 ---
 
 ## Uso Deste Documento
 
 - Para fechar a v0.2, priorize F1, F2 e F3 junto com os smoke tests de [PROTOTYPE.md](PROTOTYPE.md).
-- Antes de release público, priorize C1, H1, H2, H12, U1 e D1/D3.
+- Antes de release público, priorize H1, H2, H12, U1 e D1/D3. Os gaps criticos C1/C2/C3 ja foram fechados — historia em [WFP_HARDENING.md](WFP_HARDENING.md).
 - Quando um gap for fechado, mova para "Fechado Desde a Lista v0.1" com referência aos arquivos alterados.
