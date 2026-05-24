@@ -655,17 +655,17 @@ Mesmo raciocínio do desktop: primeiro a infraestrutura (Firebase Auth, API clie
 
 ```yaml
 dependencies:
-  firebase_core: ^3.8.0
-  firebase_auth: ^5.3.0
-  google_sign_in: ^6.2.0
-  http: ^1.2.0
-  flutter_riverpod: ^2.6.0
-  shared_preferences: ^2.3.0
+  firebase_core: ^3.13.0
+  firebase_auth: ^5.5.1
+  google_sign_in: ^6.2.2
+  dio: ^5.7.0
+  flutter_riverpod: ^2.6.1
+  flutter_secure_storage: ^9.2.4
   sqflite_sqlcipher: ^3.1.0
-  path: ^1.9.0
+  path: ^1.9.1
 ```
 
-> **sqflite_sqlcipher** é um drop-in replacement do sqflite que usa SQLCipher por baixo. A API é idêntica ao sqflite, mas ao abrir o banco você passa um `password` e todos os dados ficam criptografados no disco. No Android, isso protege o banco local mesmo em dispositivos rooteados.
+> **dio** é escolhido em vez de `http` porque permite interceptors — o `_AuthInterceptor` injeta o header `Authorization` automaticamente em toda requisição e faz retry em 401, sem repetir essa lógica em cada chamada. **flutter_secure_storage** armazena o `device_token` do filho criptografado (Android: EncryptedSharedPreferences; iOS: Keychain), equivalente ao Windows Credential Manager usado no desktop. **sqflite_sqlcipher** é um drop-in replacement do sqflite que usa SQLCipher por baixo — o banco local fica criptografado no disco mesmo em dispositivos rooteados.
 
 ### Configuração Firebase Android (obrigatória antes de codar)
 
@@ -681,20 +681,18 @@ Sem isso, o Firebase não inicializa e nada funciona. Esse é o passo que mais c
 | Arquivo | O que implementar |
 |---------|------------------|
 | `lib/main.dart` | WidgetsFlutterBinding, Firebase.initializeApp, ProviderScope, rodar App |
-| `lib/app.dart` | MaterialApp com ThemeData e rotas |
-| `lib/theme.dart` | ThemeData com cores DopaBlocker, estilos de botão/input/card |
-| `lib/routes.dart` | Map de rotas nomeadas: /welcome, /signup, /login, /child-code, /home, /blocking, /parental, /settings |
-| `lib/core/constants.dart` | BACKEND_URL (dev/prod), nomes dos method channels, chaves SharedPreferences |
-| `lib/core/firebase_service.dart` | Wrapper Firebase Auth: signInEmail, signInGoogle, register, signOut, getIdToken, authStateChanges |
-| `lib/core/api_client.dart` | Classe HTTP com get/post/put/delete, JWT automático no header, base URL de constants |
-| `lib/core/database_service.dart` | Abrir SQLCipher local com openDatabase(password: key), criar tabelas, CRUD para cache offline de blocklist/devices |
-| `lib/models/user.dart` | User com fromJson, toJson, copyWith |
-| `lib/models/device.dart` | Device com fromJson, toJson, copyWith |
-| `lib/models/blocked_item.dart` | BlockedItem com fromJson, toJson, copyWith |
-| `lib/providers/auth_provider.dart` | StateNotifierProvider: login, loginWithGoogle, logout, checkAuthState |
-| `lib/providers/blocking_provider.dart` | StateNotifierProvider: fetchBlocklist, addItem, removeItem, toggleBlocking, toggleAdultFilter. Chama blocking_channel para controlar VPN |
-| `lib/providers/device_provider.dart` | StateNotifierProvider: registerDevice, generateLinkCode, confirmLinkCode, getLinkedDevices |
-| `lib/channels/blocking_channel.dart` | MethodChannel 'com.dopablocker/blocking': startVpn, stopVpn, isVpnActive, updateBlocklist |
+| `lib/app.dart` | MaterialApp com ThemeData, rotas; resolve home via `switch (authState)` |
+| `lib/routes.dart` | Constantes de rotas nomeadas: /welcome, /login, /child-code, /home, /blocking, /parental, /settings, /link-device |
+| `lib/core/constants.dart` | backendUrl (dev: `10.0.2.2:3000`, prod), nome do MethodChannel, chaves do SecureStorage |
+| `lib/core/auth_header_holder.dart` | Singleton que decide qual header `Authorization` enviar: Firebase JWT ou device token `dt_xxx`. Desacopla o Dio interceptor do Riverpod |
+| `lib/core/firebase_service.dart` | Wrapper Firebase Auth: signInWithEmail, signInWithGoogle, createAccountWithEmail, signOut, getIdToken, authStateChanges |
+| `lib/core/api_client.dart` | Dio client com `_AuthInterceptor` (lê `AuthHeaderHolder.instance`), retry em 401, `ApiException`. Todos os endpoints de auth/blocklist/devices do backend |
+| `lib/core/api_dtos.dart` | DTOs de resposta: `EmailCodeStartResponse`, `EmailCodeVerifyResponse`, `GenerateLinkCodeResponse`, `ConfirmLinkCodeResponse`, `AdultFilterSettings` |
+| `lib/models/user.dart` | User com fromJson (snake_case→camelCase), toJson, copyWith, getters `isParental`/`isPersonal` |
+| `lib/models/device.dart` | Device com fromJson, toJson, copyWith; trata `is_child == 1` (SQLite int) |
+| `lib/models/blocked_item.dart` | BlockedItem com fromJson, toJson, copyWith; trata `is_active == 1` (SQLite int) |
+| `lib/providers/auth_provider.dart` | StateNotifierProvider implementando [AUTH_STATE_MACHINE.md](AUTH_STATE_MACHINE.md): boot, Firebase, child session, pending registration |
+| `lib/screens/` | splash, welcome, login, child_code, home, child_blocked, blocking (stub), parental (stub), settings, link_device |
 
 ### Detalhamento
 
@@ -708,30 +706,34 @@ Sem isso, o Firebase não inicializa e nada funciona. Esse é o passo que mais c
 
 **Providers Riverpod** — Cada provider é um `StateNotifier` que gerencia um estado imutável. O Riverpod garante que qualquer widget que observe um provider é reconstruído automaticamente quando o estado muda — sem callbacks manuais, sem `setState()`.
 
-- `auth_provider` — Gerencia um estado variante (**sealed class `AuthState`**):
+- `auth_provider` — Gerencia um estado variante implementado como **sealed class** espelhando [AUTH_STATE_MACHINE.md](AUTH_STATE_MACHINE.md):
 
   ```dart
   sealed class AuthState {}
-  class AuthLoading extends AuthState {}
-  class AuthUnauthenticated extends AuthState {}
-  class AuthFirebase extends AuthState {   // Pessoal ou Pais
+  class AuthBooting extends AuthState {}           // inicialização, mostra SplashScreen
+  class AuthSignedOut extends AuthState {}         // sem sessão, mostra WelcomeScreen
+  class AuthAuthenticating extends AuthState {}    // operação em andamento
+  class AuthAuthenticated extends AuthState {      // Pessoal ou Pais logados
     final User user;
-    final String mode;  // 'personal' ou 'parental'
-    AuthFirebase(this.user, this.mode);
+    final fb.User firebaseUser;
   }
-  class AuthChildSession extends AuthState {  // Filho sem conta Firebase
-    final String userId;       // user_id do pai
-    final String deviceId;     // id deste device filho
-    final String deviceToken;  // dt_xxx (guardado em secure storage)
-    AuthChildSession(this.userId, this.deviceId, this.deviceToken);
+  class AuthChildSession extends AuthState {       // Filho sem conta Firebase
+    final String deviceToken;  // dt_xxx (em SecureStorage)
+    final String deviceId;
+    final String userId;
   }
+  class AuthPendingLocalRegistration extends AuthState { // Firebase criado, /auth/register pendente
+    final fb.User firebaseUser;
+  }
+  class AuthBackendUnavailable extends AuthState {}  // backend offline no boot
   ```
 
-  Funções:
-  - `login`, `loginWithGoogle`, `register` — fluxo Pessoal/Pais via Firebase. Escuta `authStateChanges` do Firebase e chama `POST /auth/login` no backend para sincronizar.
-  - `confirmChildCode(code, deviceName, platform)` — fluxo Filhos. Chama `POST /devices/link/confirm` (rota pública, sem header Authorization), recebe o `device_token`, salva via `flutter_secure_storage`, e atualiza o estado para `AuthChildSession`.
-  - `logout` — limpa Firebase session OU limpa secure storage + device token, dependendo do estado atual.
-  - Na inicialização (`checkAuthState`), verifica primeiro o Firebase (`authStateChanges.first`). Se não houver Firebase user, tenta ler `device_token` do secure storage e faz um ping no backend (`GET /blocklist`) para validar. Se o token for válido, restaura `AuthChildSession`; senão, vai para `AuthUnauthenticated`.
+  Funções do `AuthNotifier`:
+  - `_boot()` — chamado no `initState`. Verifica child session via SecureStorage primeiro; senão, escuta `authStateChanges` do Firebase. Se Firebase user existe, chama `GET /auth/me`; se backend offline → `AuthBackendUnavailable`.
+  - `loginWithEmail`, `loginWithGoogle`, `register` — fluxo Pessoal/Pais via Firebase.
+  - `confirmChildCode(code, deviceName)` — fluxo Filhos: POST público `/devices/link/confirm`, recebe `device_token`, salva em `flutter_secure_storage` com `AndroidOptions(encryptedSharedPreferences: true)`, emite `AuthChildSession`.
+  - `logout` — limpa Firebase OU apaga `device_token` do SecureStorage, conforme o estado atual.
+  - `retryBackendSync()` — permite sair de `AuthBackendUnavailable` e re-tentar o boot.
 
 - `blocking_provider` — Gerencia a blocklist e o estado do bloqueio. Faz chamadas ao `api_client` para sincronizar com o backend e ao `blocking_channel` para controlar o bloqueio nativo (VPN). Quando o usuário adiciona um site, o provider: salva no banco local (via `database_service`), atualiza o state (UI reflete), envia para o backend (sync), e atualiza a blocklist na VPN (via `blocking_channel`).
 
@@ -739,10 +741,12 @@ Sem isso, o Firebase não inicializa e nada funciona. Esse é o passo que mais c
 
 - `device_provider` — Comunica exclusivamente com o backend via `api_client`. Gerencia a lista de dispositivos e a vinculação parental. A função `generateLinkCode()` só está disponível quando `auth_provider` estiver em `AuthFirebase(mode: 'parental')` (UI oculta o botão caso contrário).
 
-**api_client.dart** — a função de request precisa escolher o header `Authorization` baseado no estado do `auth_provider`:
-- Se `AuthFirebase`: `Bearer <firebase_jwt>` (chamando `getIdToken()`)
-- Se `AuthChildSession`: `Bearer <device_token>` (usa o token guardado, que já tem o prefixo `dt_`)
-- Se `AuthUnauthenticated` ou `AuthLoading`: sem header (só rotas públicas funcionam — `/auth/register`, `/auth/login`, `/devices/link/confirm`)
+**api_client.dart** — usa Dio com `_AuthInterceptor`. O interceptor lê o header de `AuthHeaderHolder.instance.getHeader()`, que é atualizado pelo `AuthNotifier` conforme o estado muda:
+- `AuthHeaderHolder.instance.setFirebase()` → `Bearer <firebase_jwt>` (refresh automático via `getIdToken(force: true)`)
+- `AuthHeaderHolder.instance.setChild(deviceToken)` → `Bearer dt_xxx`
+- `AuthHeaderHolder.instance.clear()` → sem header (rotas públicas: `/auth/register`, `/devices/link/confirm`)
+
+O `_AuthInterceptor` tenta refresh e re-emite a requisição em caso de 401. Essa separação desacopla o Dio (criado uma vez) do Riverpod (que atualiza o singleton sem recriar o client).
 
 **blocking_channel.dart** — Define a ponte Flutter ↔ Kotlin. Declara um `MethodChannel` com nome `'com.dopablocker/blocking'` e expõe métodos estáticos que chamam `invokeMethod`. Os métodos são: `startVpn()`, `stopVpn()`, `isVpnActive()`, `updateBlocklist(List<String> domains)`. Nesta fase, o lado Kotlin ainda não responde — o channel só vai funcionar de verdade na Fase M2. Chamadas vão lançar `MissingPluginException`, o que é esperado.
 
@@ -1048,7 +1052,7 @@ Testar: `cd infra && docker compose up --build`. A variável `SQLCIPHER_KEY` é 
 | D1 - Desktop Tauri Core | rusqlite (bundled-sqlcipher), tokio-rusqlite, uuid, tokio, reqwest |
 | D2 - Desktop Blocking | trust-dns-proto, windows |
 | D3 - Desktop Frontend | firebase, @tauri-apps/api (pnpm) |
-| M1 - Mobile Core | firebase_core/auth, google_sign_in, http, flutter_riverpod, shared_preferences, sqflite_sqlcipher, path |
+| M1 - Mobile Core | firebase_core/auth, google_sign_in, dio, flutter_riverpod, flutter_secure_storage, sqflite_sqlcipher, path |
 | M2 - Mobile Kotlin | (nenhuma — APIs nativas Android) |
 | M3 - Mobile UI | (nenhuma) |
 | B5 - Integração | (nenhuma) |

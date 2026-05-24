@@ -18,7 +18,7 @@ Limitacao residual aceita: resolvers DoH self-hosted com IP+FQDN customizados, o
 
 | # | Gap | Onde | Impacto |
 |---|-----|------|---------|
-| F1 | **Mobile ainda não implementado** | [mobile/](../mobile/) contém placeholders Dart/Kotlin | A meta v0.2 exige Android funcional, mas Firebase, providers, SQLCipher, VPN e Accessibility ainda não existem de verdade |
+| F1 | **Mobile: auth + API prontos; VPN/Kotlin e UI completa pendentes** | [mobile/lib/](../mobile/lib/) — Firebase, Riverpod, Dio, auth_provider, telas de auth/home implementadas | Infraestrutura de auth + API implementada (M1 concluído); falta M2 (VPN Service, AccessibilityService, BootReceiver em Kotlin) e M3 (UI completa de blocking/parental) |
 | F2 | **Sync cross-device periódico incompleto** | [blocking.ts](../desktop/src/lib/stores/blocking.ts), [child-blocked](../desktop/src/routes/child-blocked/+page.svelte) | O desktop sincroniza em load/mutação; não há polling periódico completo da blocklist em todos os estados |
 | F3 | **Modo Filhos desktop precisa de golden path de bloqueio** | [child-blocked/+page.svelte](../desktop/src/routes/child-blocked/+page.svelte), [blocking.ts](../desktop/src/lib/stores/blocking.ts) | A sessão `child_session` existe, mas falta validar/documentar o ciclo completo: restaurar sessão, carregar regras, ligar engine e atualizar regras do pai |
 | F4 | **Blocklist única por conta** | Schema global por `user_id` | Decisão aceita para v0.2; regras diferentes por filho ficam para depois |

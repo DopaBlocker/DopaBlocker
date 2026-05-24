@@ -1,25 +1,19 @@
-// Entry point do app mobile DopaBlocker.
-// Implementar: inicializar Firebase (WidgetsFlutterBinding.ensureInitialized,
-// Firebase.initializeApp), configurar Riverpod (ProviderScope),
-// rodar o widget App definido em app.dart.
-
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-void main() {
-  runApp(const MainApp());
-}
+import 'app.dart';
 
-class MainApp extends StatelessWidget {
-  const MainApp({super.key});
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
 
-  @override
-  Widget build(BuildContext context) {
-    return const MaterialApp(
-      home: Scaffold(
-        body: Center(
-          child: Text('DopaBlocker'),
-        ),
-      ),
-    );
-  }
+  // Inicializa Firebase antes de qualquer coisa.
+  // Requer google-services.json em android/app/ (não commitar — adicionar ao .gitignore).
+  await Firebase.initializeApp();
+
+  runApp(
+    const ProviderScope(
+      child: App(),
+    ),
+  );
 }

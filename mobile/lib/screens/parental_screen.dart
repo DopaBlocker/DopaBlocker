@@ -1,5 +1,24 @@
-// Tela de controle parental.
-// Implementar: mode_selector (este dispositivo é pai ou filho?),
-// se pai: lista de dispositivos filhos, gerenciar bloqueios que propagam,
-// botão para gerar código de vinculação.
-// Se filho: exibir status dos bloqueios aplicados pelo pai.
+import 'package:flutter/material.dart';
+
+import '../routes.dart';
+
+/// Controle parental: lista de dispositivos filhos, geração de código de vinculação.
+/// Fase 2: chamar GET /devices, exibir filhos, navegar para LinkDeviceScreen.
+class ParentalScreen extends StatelessWidget {
+  const ParentalScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Controle Parental')),
+      body: const Center(
+        child: Text('Controle Parental — em construção', style: TextStyle(color: Colors.black54)),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => Navigator.pushNamed(context, AppRoutes.linkDevice),
+        icon: const Icon(Icons.add_link),
+        label: const Text('Vincular filho'),
+      ),
+    );
+  }
+}
