@@ -3,15 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'providers/auth_provider.dart';
 import 'routes.dart';
+import 'theme.dart';
 import 'screens/splash_screen.dart';
 import 'screens/welcome_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/child_code_screen.dart';
-import 'screens/home_screen.dart';
+import 'screens/main_shell.dart';
 import 'screens/child_blocked_screen.dart';
-import 'screens/blocking_screen.dart';
-import 'screens/parental_screen.dart';
-import 'screens/settings_screen.dart';
 import 'screens/link_device_screen.dart';
 
 class App extends ConsumerWidget {
@@ -23,23 +21,17 @@ class App extends ConsumerWidget {
     return MaterialApp(
       title: 'DopaBlocker',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4F46E5)),
-        useMaterial3: true,
-      ),
-      // A tela raiz é determinada pelo estado de auth.
-      // Navegações internas (ex: login → home) são gerenciadas pelo próprio
-      // state notifier via mudança de estado — o ConsumerWidget re-renderiza.
+      theme: AppTheme.dark,
+      themeMode: ThemeMode.dark,
+      // A tela raiz é determinada pelo estado de auth; navegações internas
+      // (login → home) acontecem via mudança de estado do StateNotifier.
       home: _resolveHome(auth),
       routes: {
         AppRoutes.welcome: (_) => const WelcomeScreen(),
         AppRoutes.login: (_) => const LoginScreen(),
         AppRoutes.childCode: (_) => const ChildCodeScreen(),
-        AppRoutes.home: (_) => const HomeScreen(),
+        AppRoutes.home: (_) => const MainShell(),
         AppRoutes.childBlocked: (_) => const ChildBlockedScreen(),
-        AppRoutes.blocking: (_) => const BlockingScreen(),
-        AppRoutes.parental: (_) => const ParentalScreen(),
-        AppRoutes.settings: (_) => const SettingsScreen(),
         AppRoutes.linkDevice: (_) => const LinkDeviceScreen(),
       },
     );
@@ -49,8 +41,8 @@ class App extends ConsumerWidget {
         AuthBooting() || AuthAuthenticating() => const SplashScreen(),
         AuthSignedOut() => const WelcomeScreen(),
         AuthPendingLocalRegistration() => const LoginScreen(),
-        AuthBackendUnavailable() => const WelcomeScreen(), // exibe snackbar de erro na tela
-        AuthAuthenticated() => const HomeScreen(),
+        AuthBackendUnavailable() => const WelcomeScreen(),
+        AuthAuthenticated() => const MainShell(),
         AuthChildSession() => const ChildBlockedScreen(),
       };
 }

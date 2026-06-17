@@ -849,6 +849,30 @@ Registrar no `AndroidManifest.xml` com `<intent-filter>` para `BOOT_COMPLETED`.
 
 ## Fase M3 — UI Flutter (Telas + Widgets)
 
+> **Status: implementado.** A UI foi construída a partir do mockup de telas, com
+> tema escuro. A estrutura final difere deste plano em alguns pontos:
+> - As telas pós-login viraram **4 abas** num shell com `IndexedStack` +
+>   `NavigationBar`: [main_shell.dart](../mobile/lib/screens/main_shell.dart) →
+>   Início ([home_screen.dart](../mobile/lib/screens/home_screen.dart)),
+>   Bloqueios ([blocking_screen.dart](../mobile/lib/screens/blocking_screen.dart)),
+>   Pais ([parental_screen.dart](../mobile/lib/screens/parental_screen.dart)),
+>   Ajustes ([settings_screen.dart](../mobile/lib/screens/settings_screen.dart)).
+> - **Início** funde status de proteção + progresso (Marcos) + dashboard (Seu mês)
+>   numa única tela rolável.
+> - Não há `signup_screen.dart` separado — cadastro/login ficam em
+>   [login_screen.dart](../mobile/lib/screens/login_screen.dart) com abas.
+> - Tema em [theme.dart](../mobile/lib/theme.dart); widgets reutilizáveis em
+>   [mobile/lib/widgets/](../mobile/lib/widgets/) (ui_kit, mini_bar_chart,
+>   block_list_tile, add_block_dialog, setting_toggle_tile, countdown_text).
+> - Providers de UI: [blocking](../mobile/lib/providers/blocking_provider.dart),
+>   [device](../mobile/lib/providers/device_provider.dart),
+>   [stats](../mobile/lib/providers/stats_provider.dart),
+>   [preferences](../mobile/lib/providers/preferences_provider.dart).
+> - **Pendências:** as telas de progresso/dashboard usam dados representativos
+>   (depende de telemetria do backend — ver [GAPS.md F8](GAPS.md)); blocking/device
+>   providers caem em dados demo quando o backend está offline; o bloqueio real
+>   depende da Fase M2 (`packetLoop` da VPN ainda é TODO).
+
 ### Por que esta fase
 
 Com providers, services e código nativo funcionando, todas as camadas invisíveis estão prontas. Agora é preciso criar as telas que o usuário realmente vai ver e interagir. Cada tela consome dados dos providers (via Riverpod) e dispara ações que percorrem toda a stack: UI → Provider → API/Channel → Backend/Nativo.
