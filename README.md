@@ -243,7 +243,7 @@ Reiniciar o computador e definir um usuário/senha para o Ubuntu.
 
 ## Passo 5 — Instalar Firebase CLI
 
-Firebase é usado para autenticação (Google + email/senha) e Firestore (sincronização de dados).
+Firebase é usado para **autenticação** (Google + email/senha). A sincronização de dados é feita pelo **backend** (REST + SQLCipher como fonte de verdade), não por Firestore.
 
 ```bash
 npm install -g firebase-tools
@@ -464,10 +464,11 @@ DopaBlocker/
 │   ├── firestore.rules        # Regras de segurança do Firestore
 │   └── compose.yml            # Docker Compose para dev local
 │
-└── docs/              # Documentação
-    ├── ARCHITECTURE.md        # Arquitetura e fluxo de dados
-    ├── PROTOTYPE.md           # Escopo do protótipo v0.1
-    └── API.md                 # Documentação da API REST
+└── docs/              # Documentação (consolidada em 4 arquivos)
+    ├── ARCHITECTURE.md          # Estado atual: arquitetura, auth, engine de bloqueio
+    ├── API.md                   # Referência da API REST
+    ├── RUNBOOK.md               # Rodar, testar, golden path e limitações conhecidas
+    └── DECISOES_E_ROADMAP.md    # Decisões revisadas + roadmap de evolução
 ```
 
 ---

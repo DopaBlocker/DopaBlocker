@@ -29,10 +29,11 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         // minSdk fixado em 23: firebase_auth e o EncryptedSharedPreferences do
         // flutter_secure_storage exigem API 23+.
-        minSdk = 23
+        minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -42,6 +43,20 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    // Testes unitários JVM da lógica pura de bloqueio (DomainMatcher, DnsPacket).
+    // isReturnDefaultValues evita falhas ao tocar tipos do Android não usados nos
+    // testes (a lógica testada é Kotlin/JVM puro).
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+    // Testes instrumentados (on-device) da persistência do bloqueio.
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test:runner:1.5.2")
 }
 
 flutter {

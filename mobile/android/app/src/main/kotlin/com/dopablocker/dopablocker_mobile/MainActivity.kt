@@ -33,7 +33,7 @@ class MainActivity : FlutterActivity() {
                     "isVpnActive" -> result.success(VpnManager.isActive())
                     "updateBlocklist" -> {
                         val domains = call.argument<List<String>>("domains") ?: emptyList()
-                        DnsVpnService.updateBlocklist(domains)
+                        DnsVpnService.updateBlocklist(applicationContext, domains)
                         result.success(true)
                     }
                     "isAccessibilityEnabled" -> result.success(isAccessibilityEnabled())

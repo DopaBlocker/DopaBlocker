@@ -92,7 +92,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
     setState(() { _loading = true; _error = null; });
     try {
       // Para email/senha: implementar aqui o fluxo de email-code antes do signup.
-      // Ref: docs/AUTH_STATE_MACHINE.md § "Fluxo de entrada"
+      // Ref: docs/ARCHITECTURE.md § "Máquina de estados de auth"
       // ref.read(apiClientProvider).emailCodeStart(_emailCtrl.text.trim());
       // ... aguardar código, verificar, obter emailVerificationToken ...
 

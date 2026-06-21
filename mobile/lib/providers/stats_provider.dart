@@ -9,8 +9,8 @@ class TopBlocked {
 
 /// Estatísticas de progresso exibidas nas seções Marcos / Seu mês.
 ///
-/// NOTA: o backend ainda não tem telemetria de bloqueios (GAPS.md F8 — "Sem
-/// painel de estatísticas"). Estes valores são representativos/locais até que
+/// NOTA: o backend ainda não tem telemetria de bloqueios (DECISOES_E_ROADMAP.md
+/// F8 — "Sem painel de estatísticas"). Estes valores são representativos/locais até que
 /// uma tabela de eventos exista. Quando F8 for implementado, trocar este
 /// Provider por um StateNotifier que consome o endpoint real.
 class StatsData {

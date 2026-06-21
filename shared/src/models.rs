@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// **Nota:** a tela inicial do app oferece 3 opções — Pessoal, Pais e Filhos — mas
 /// "Filhos" NÃO é um `BlockMode`. No fluxo Filhos, nenhuma conta nova é criada:
 /// o device do filho é registrado sob o `user_id` do pai (que tem `mode=Parental`)
-/// com `Device.is_child = true`. Ver `docs/PROTOTYPE.md` → "Fluxo de Onboarding".
+/// com `Device.is_child = true`. Ver `docs/ARCHITECTURE.md` → "Onboarding".
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum BlockMode {

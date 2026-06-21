@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../channels/blocking_channel.dart';
 import '../core/api_client.dart';
 import '../models/blocked_item.dart';
+import 'auth_provider.dart';
 
 /// Estado da blocklist e do bloqueio ativo.
 class BlockingState {
@@ -42,13 +43,14 @@ class BlockingState {
 }
 
 final blockingProvider = StateNotifierProvider<BlockingNotifier, BlockingState>(
-  (ref) => BlockingNotifier(ref.read(apiClientProvider))..load(),
+  (ref) => BlockingNotifier(ref.read(apiClientProvider), ref)..load(),
 );
 
 class BlockingNotifier extends StateNotifier<BlockingState> {
   final ApiClient _api;
+  final Ref _ref;
 
-  BlockingNotifier(this._api)
+  BlockingNotifier(this._api, this._ref)
       : super(BlockingState(isLoading: true, activeSince: _startOfToday()));
 
   static DateTime _startOfToday() {
@@ -128,12 +130,20 @@ class BlockingNotifier extends StateNotifier<BlockingState> {
   }
 
   /// Repassa a blocklist de domínios ativos para o serviço nativo de VPN.
+  ///
+  /// Regra do pai imune: no device do pai em modo parental, envia lista vazia
+  /// (o pai não bloqueia a si mesmo). Conta pessoal e device do filho aplicam a
+  /// lista normalmente.
   void _syncNative() {
     if (!state.isBlockingActive) return;
-    final domains = state.items
-        .where((i) => i.isActive && i.itemType == 'domain')
-        .map((i) => i.value)
-        .toList();
+    final auth = _ref.read(authProvider);
+    final isParentDevice = auth is AuthAuthenticated && auth.user.isParental;
+    final domains = isParentDevice
+        ? const <String>[]
+        : state.items
+            .where((i) => i.isActive && i.itemType == 'domain')
+            .map((i) => i.value)
+            .toList();
     BlockingChannel.updateBlocklist(domains).catchError((_) {});
   }
 

@@ -8,7 +8,7 @@
 #
 # Fonte: lista publica curada de provedores conhecidos. Cobertura ~95% dos
 # casos comuns. Resolvers self-hosted ou com IPs nao listados escapam — ver
-# docs/WFP_HARDENING.md secao C2.
+# docs/ARCHITECTURE.md (engine desktop / WFP) e docs/DECISOES_E_ROADMAP.md.
 #
 # Ultima atualizacao manual: 2026-05-04
 # =============================================================================

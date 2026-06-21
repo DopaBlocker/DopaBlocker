@@ -12,8 +12,8 @@ import '../models/user.dart';
 // ── Estado ───────────────────────────────────────────────────────────────────
 
 /// Máquina de estados de autenticação.
-/// Contrato definido em docs/AUTH_STATE_MACHINE.md — implementação de referência
-/// do desktop em desktop/src/lib/stores/auth.ts.
+/// Contrato definido em docs/ARCHITECTURE.md ("Máquina de estados de auth") —
+/// implementação de referência do desktop em desktop/src/lib/stores/auth.ts.
 sealed class AuthState {}
 
 class AuthBooting extends AuthState {}
