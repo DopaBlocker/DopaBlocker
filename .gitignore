@@ -49,6 +49,7 @@ ui-debug.log
 # Misc
 *.log
 *.pid
+start_all.bat
 
 .cursor/
 .claude/
