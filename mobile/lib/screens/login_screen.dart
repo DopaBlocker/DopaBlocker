@@ -1,8 +1,12 @@
+import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/api_client.dart';
 import '../providers/auth_provider.dart';
+import '../theme.dart';
+import '../widgets/ui_kit.dart';
 
 /// Tela de login e cadastro para modos Pessoal e Pais.
 /// Recebe `arguments` da rota como String: 'personal' ou 'parental'.
@@ -28,9 +32,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
   final _emailCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
   final _nameCtrl = TextEditingController();
+  final _codeCtrl = TextEditingController();
   final _formKey = GlobalKey<FormState>();
   bool _loading = false;
   String? _error;
+
+  // Cadastro por email: passa a exibir o campo de código após o envio.
+  bool _codeSent = false;
+  // Google: marca uma tentativa ativa de cadastro/login para concluir o
+  // registro de conta nova (AuthPendingLocalRegistration) sem disparar no boot.
+  bool _completingGoogle = false;
+  bool _googleRegistering = false;
 
   @override
   void initState() {
@@ -44,6 +56,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
     _emailCtrl.dispose();
     _passwordCtrl.dispose();
     _nameCtrl.dispose();
+    _codeCtrl.dispose();
     super.dispose();
   }
 
@@ -70,46 +83,83 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
   }
 
   Future<void> _loginWithGoogle() async {
-    setState(() { _loading = true; _error = null; });
+    setState(() { _loading = true; _error = null; _completingGoogle = true; });
     try {
       await ref.read(authProvider.notifier).loginWithGoogle();
+      // Se a conta já existir, o estado vira AuthAuthenticated e o app navega.
+      // Se for conta nova, vira AuthPendingLocalRegistration e o listener do
+      // build conclui o cadastro.
     } on FirebaseAuthException catch (e) {
+      _completingGoogle = false;
       _setError(_firebaseMessage(e.code));
     } catch (_) {
+      _completingGoogle = false;
       _setError('Login com Google falhou.');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  /// Cadastro com email/senha — inclui verificação de código por email.
-  /// TODO: implementar o fluxo de 4 passos (email-code/start → verify → Firebase
-  /// → /auth/register). Por ora dispara Firebase signup + register direto,
-  /// sem email-code (funciona apenas com Google ou quando o backend não exige
-  /// verificação — útil para dev/testes com EMAIL_DELIVERY_MODE=log).
-  Future<void> _register() async {
-    if (!_formKey.currentState!.validate()) return;
+  /// Conclui o cadastro de conta NOVA via Google (estado pendente). Backend não
+  /// exige token de email para provider federado.
+  Future<void> _completeGoogleRegistration(User user) async {
     setState(() { _loading = true; _error = null; });
     try {
-      // Para email/senha: implementar aqui o fluxo de email-code antes do signup.
-      // Ref: docs/ARCHITECTURE.md § "Máquina de estados de auth"
-      // ref.read(apiClientProvider).emailCodeStart(_emailCtrl.text.trim());
-      // ... aguardar código, verificar, obter emailVerificationToken ...
+      final name = (user.displayName?.trim().isNotEmpty ?? false)
+          ? user.displayName!.trim()
+          : (user.email?.split('@').first ?? 'Usuário');
+      await ref.read(authProvider.notifier).register(displayName: name, mode: _mode);
+    } catch (_) {
+      _setError('Não foi possível concluir o cadastro com Google.');
+    } finally {
+      _googleRegistering = false;
+      _completingGoogle = false;
+      if (mounted) setState(() => _loading = false);
+    }
+  }
 
-      // Firebase signup
-      await FirebaseAuth.instance.createUserWithEmailAndPassword(
-        email: _emailCtrl.text.trim(),
-        password: _passwordCtrl.text,
-      );
-      // O authProvider detecta o novo usuário Firebase e emite
-      // AuthPendingLocalRegistration. Então chamamos register():
-      await ref.read(authProvider.notifier).register(
+  /// Cadastro com email/senha — passo 1: dispara o envio do código por email.
+  Future<void> _startEmailRegistration() async {
+    final email = _emailCtrl.text.trim();
+    if (_nameCtrl.text.trim().isEmpty) { _setError('Informe seu nome.'); return; }
+    if (!email.contains('@')) { _setError('Email inválido.'); return; }
+    if (_passwordCtrl.text.length < 6) { _setError('Senha: mínimo 6 caracteres.'); return; }
+    setState(() { _loading = true; _error = null; });
+    try {
+      await ref.read(apiClientProvider).emailCodeStart(email);
+      setState(() => _codeSent = true);
+    } on DioException catch (e) {
+      final err = e.error;
+      _setError(err is ApiException ? err.message : 'Não foi possível enviar o código.');
+    } catch (_) {
+      _setError('Não foi possível enviar o código.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /// Cadastro com email/senha — passo 2: verifica o código, cria no Firebase e
+  /// conclui o registro local com o token.
+  Future<void> _confirmEmailRegistration() async {
+    final email = _emailCtrl.text.trim();
+    final code = _codeCtrl.text.trim();
+    if (code.length < 6) { _setError('Informe o código de 6 dígitos.'); return; }
+    setState(() { _loading = true; _error = null; });
+    try {
+      final verify = await ref.read(apiClientProvider).emailCodeVerify(email, code);
+      await ref.read(authProvider.notifier).registerWithEmail(
+            email: email,
+            password: _passwordCtrl.text,
             displayName: _nameCtrl.text.trim(),
             mode: _mode,
-            // emailVerificationToken: token obtido no passo de verificação
+            emailVerificationToken: verify.emailVerificationToken,
           );
+      // Sucesso → authProvider emite AuthAuthenticated → app navega.
     } on FirebaseAuthException catch (e) {
       _setError(_firebaseMessage(e.code));
+    } on DioException catch (e) {
+      final err = e.error;
+      _setError(err is ApiException ? err.message : 'Cadastro falhou. Tente novamente.');
     } catch (_) {
       _setError('Cadastro falhou. Tente novamente.');
     } finally {
@@ -117,14 +167,96 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
     }
   }
 
+  /// Conclui o cadastro a partir do estado pendente (sessão Firebase já existe).
+  /// Com o backend idempotente + reclaim, isto cria a conta nova OU recupera uma
+  /// conta órfã do mesmo email. Para provider `password` exige o token de email.
+  Future<void> _finishPending({String? token}) async {
+    setState(() { _loading = true; _error = null; });
+    try {
+      final auth = ref.read(authProvider);
+      if (auth is! AuthPendingLocalRegistration) return;
+      final fbUser = auth.firebaseUser;
+      final name = (fbUser.displayName?.trim().isNotEmpty ?? false)
+          ? fbUser.displayName!.trim()
+          : (fbUser.email?.split('@').first ?? 'Usuário');
+      await ref.read(authProvider.notifier).register(
+            displayName: name,
+            mode: _mode,
+            emailVerificationToken: token,
+          );
+    } on DioException catch (e) {
+      final err = e.error;
+      _setError(err is ApiException ? err.message : 'Não foi possível concluir o cadastro.');
+    } catch (_) {
+      _setError('Não foi possível concluir o cadastro.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /// Provider `password` no estado pendente: dispara o envio do código de email
+  /// (prova de posse exigida pelo backend para concluir/recuperar a conta).
+  Future<void> _sendPendingCode(String email) async {
+    setState(() { _loading = true; _error = null; });
+    try {
+      await ref.read(apiClientProvider).emailCodeStart(email);
+      setState(() => _codeSent = true);
+    } on DioException catch (e) {
+      final err = e.error;
+      _setError(err is ApiException ? err.message : 'Não foi possível enviar o código.');
+    } catch (_) {
+      _setError('Não foi possível enviar o código.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _verifyPendingAndFinish(String email) async {
+    final code = _codeCtrl.text.trim();
+    if (code.length < 6) { _setError('Informe o código de 6 dígitos.'); return; }
+    setState(() { _loading = true; _error = null; });
+    try {
+      final verify = await ref.read(apiClientProvider).emailCodeVerify(email, code);
+      await _finishPending(token: verify.emailVerificationToken);
+    } on DioException catch (e) {
+      final err = e.error;
+      _setError(err is ApiException ? err.message : 'Código inválido.');
+      if (mounted) setState(() => _loading = false);
+    } catch (_) {
+      _setError('Código inválido.');
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Conta nova via Google: ao virar pendente durante uma tentativa ativa,
+    // conclui o cadastro local (uma única vez).
+    ref.listen<AuthState>(authProvider, (_, next) {
+      if (next is AuthPendingLocalRegistration &&
+          _completingGoogle &&
+          !_googleRegistering) {
+        _googleRegistering = true;
+        _completeGoogleRegistration(next.firebaseUser);
+      }
+    });
+
+    // Estado pendente (Firebase ok, falta concluir/recuperar a conta local).
+    // Painel dedicado, sem abas — paridade com a tela-curativo do desktop.
+    final authState = ref.watch(authProvider);
+    if (authState is AuthPendingLocalRegistration) {
+      return _buildPendingScaffold(authState);
+    }
+
     final modeLabel = _mode == 'parental' ? 'Pais' : 'Pessoal';
     return Scaffold(
       appBar: AppBar(
         title: Text('DopaBlocker — $modeLabel'),
         bottom: TabBar(
           controller: _tabs,
+          labelColor: AppColors.textPrimary,
+          unselectedLabelColor: AppColors.textSecondary,
+          indicatorColor: AppColors.primary,
           tabs: const [Tab(text: 'Entrar'), Tab(text: 'Cadastrar')],
         ),
       ),
@@ -138,42 +270,131 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
     );
   }
 
+  /// Painel da tela-curativo (estado pendente). Sem abas: só conclui/recupera a
+  /// conta local. Para Google (provider verificado) basta um toque; para
+  /// `password` roda o código de email como prova de posse.
+  Widget _buildPendingScaffold(AuthPendingLocalRegistration pending) {
+    final fbUser = pending.firebaseUser;
+    final email = fbUser.email ?? '';
+    final isPassword =
+        fbUser.providerData.any((p) => p.providerId == 'password');
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('DopaBlocker')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(AppSpacing.x6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SizedBox(height: AppSpacing.x4),
+            Text('Finalizando seu cadastro', style: AppType.h2),
+            const SizedBox(height: AppSpacing.x2),
+            Text(
+              'Sua sessão está pronta. Falta concluir o cadastro neste dispositivo.',
+              style: AppType.bodySm.copyWith(color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: AppSpacing.x6),
+            if (isPassword && _codeSent) ...[
+              Text('Enviamos um código de 6 dígitos para $email.',
+                  style: AppType.bodySm),
+              const SizedBox(height: AppSpacing.x4),
+              TextField(
+                controller: _codeCtrl,
+                decoration: _dec('Código de verificação'),
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                style: AppType.body,
+              ),
+              _errorBox(),
+              const SizedBox(height: AppSpacing.x4),
+              AppButton(
+                label: 'Concluir cadastro',
+                loading: _loading,
+                onPressed: () => _verifyPendingAndFinish(email),
+              ),
+            ] else if (isPassword) ...[
+              _errorBox(),
+              AppButton(
+                label: 'Enviar código para concluir',
+                loading: _loading,
+                onPressed: () => _sendPendingCode(email),
+              ),
+            ] else ...[
+              _errorBox(),
+              AppButton(
+                label: 'Concluir cadastro',
+                loading: _loading,
+                onPressed: () => _finishPending(),
+              ),
+            ],
+            const SizedBox(height: AppSpacing.x3),
+            AppButton(
+              label: 'Entrar com outra conta',
+              variant: AppButtonVariant.secondary,
+              onPressed:
+                  _loading ? null : () => ref.read(authProvider.notifier).logout(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Decoração padrão dos campos — herda o inputDecorationTheme (preenchido,
+  /// cantos arredondados, foco roxo); só define o label.
+  InputDecoration _dec(String label) => InputDecoration(labelText: label);
+
+  Widget _errorBox() {
+    if (_error == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: AppSpacing.x3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.error_outline, size: 16, color: AppColors.danger),
+          const SizedBox(width: AppSpacing.x2),
+          Expanded(
+            child: Text(_error!,
+                style: AppType.bodySm.copyWith(color: AppColors.danger)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildLoginTab() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(AppSpacing.x6),
       child: Form(
         key: _formKey,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const SizedBox(height: 16),
+            const SizedBox(height: AppSpacing.x4),
             TextFormField(
               controller: _emailCtrl,
-              decoration: const InputDecoration(labelText: 'Email', border: OutlineInputBorder()),
+              decoration: _dec('Email'),
               keyboardType: TextInputType.emailAddress,
+              style: AppType.body,
               validator: (v) => (v == null || !v.contains('@')) ? 'Email inválido' : null,
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: AppSpacing.x4),
             TextFormField(
               controller: _passwordCtrl,
-              decoration: const InputDecoration(labelText: 'Senha', border: OutlineInputBorder()),
+              decoration: _dec('Senha'),
               obscureText: true,
+              style: AppType.body,
               validator: (v) => (v == null || v.length < 6) ? 'Mínimo 6 caracteres' : null,
             ),
-            if (_error != null) ...[
-              const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
-            ],
-            const SizedBox(height: 24),
-            FilledButton(
-              onPressed: _loading ? null : _login,
-              child: _loading ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Entrar'),
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
+            _errorBox(),
+            const SizedBox(height: AppSpacing.x6),
+            AppButton(label: 'Entrar', onPressed: _login, loading: _loading),
+            const SizedBox(height: AppSpacing.x3),
+            AppButton(
+              label: 'Entrar com Google',
+              variant: AppButtonVariant.secondary,
+              icon: Icons.login,
               onPressed: _loading ? null : _loginWithGoogle,
-              icon: const Icon(Icons.login),
-              label: const Text('Entrar com Google'),
             ),
           ],
         ),
@@ -183,52 +404,88 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
 
   Widget _buildRegisterTab() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(AppSpacing.x6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const SizedBox(height: 16),
-          TextFormField(
-            controller: _nameCtrl,
-            decoration: const InputDecoration(labelText: 'Nome', border: OutlineInputBorder()),
-            validator: (v) => (v == null || v.trim().isEmpty) ? 'Informe seu nome' : null,
-          ),
-          const SizedBox(height: 16),
-          TextFormField(
-            controller: _emailCtrl,
-            decoration: const InputDecoration(labelText: 'Email', border: OutlineInputBorder()),
-            keyboardType: TextInputType.emailAddress,
-          ),
-          const SizedBox(height: 16),
-          TextFormField(
-            controller: _passwordCtrl,
-            decoration: const InputDecoration(labelText: 'Senha', border: OutlineInputBorder()),
-            obscureText: true,
-          ),
-          if (_error != null) ...[
-            const SizedBox(height: 12),
-            Text(_error!, style: const TextStyle(color: Colors.red)),
-          ],
-          const SizedBox(height: 8),
-          const Text(
-            'Para email/senha: um código de verificação será enviado para seu email antes de criar a conta.',
-            style: TextStyle(fontSize: 12, color: Colors.black54),
-          ),
-          const SizedBox(height: 24),
-          FilledButton(
-            onPressed: _loading ? null : _register,
-            child: _loading ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Criar conta'),
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: _loading ? null : _loginWithGoogle,
-            icon: const Icon(Icons.login),
-            label: const Text('Cadastrar com Google'),
-          ),
-        ],
+        children: _codeSent ? _registerStepCode() : _registerStepFields(),
       ),
     );
   }
+
+  /// Passo 1 do cadastro: nome/email/senha + envio do código.
+  List<Widget> _registerStepFields() => [
+        const SizedBox(height: AppSpacing.x4),
+        TextField(
+          controller: _nameCtrl,
+          decoration: _dec('Nome'),
+          style: AppType.body,
+        ),
+        const SizedBox(height: AppSpacing.x4),
+        TextField(
+          controller: _emailCtrl,
+          decoration: _dec('Email'),
+          keyboardType: TextInputType.emailAddress,
+          style: AppType.body,
+        ),
+        const SizedBox(height: AppSpacing.x4),
+        TextField(
+          controller: _passwordCtrl,
+          decoration: _dec('Senha'),
+          obscureText: true,
+          style: AppType.body,
+        ),
+        _errorBox(),
+        const SizedBox(height: AppSpacing.x2),
+        Text(
+          'Um código de verificação será enviado para seu email antes de criar a conta.',
+          style: AppType.caption,
+        ),
+        const SizedBox(height: AppSpacing.x6),
+        AppButton(label: 'Criar conta', onPressed: _startEmailRegistration, loading: _loading),
+        const SizedBox(height: AppSpacing.x3),
+        AppButton(
+          label: 'Cadastrar com Google',
+          variant: AppButtonVariant.secondary,
+          icon: Icons.login,
+          onPressed: _loading ? null : _loginWithGoogle,
+        ),
+      ];
+
+  /// Passo 2 do cadastro: digitar o código recebido por email.
+  List<Widget> _registerStepCode() => [
+        const SizedBox(height: AppSpacing.x4),
+        Text(
+          'Enviamos um código de 6 dígitos para ${_emailCtrl.text.trim()}.',
+          style: AppType.bodySm,
+        ),
+        const SizedBox(height: AppSpacing.x4),
+        TextField(
+          controller: _codeCtrl,
+          decoration: _dec('Código de verificação'),
+          keyboardType: TextInputType.number,
+          maxLength: 6,
+          style: AppType.body,
+        ),
+        _errorBox(),
+        const SizedBox(height: AppSpacing.x6),
+        AppButton(
+          label: 'Confirmar e criar conta',
+          onPressed: _confirmEmailRegistration,
+          loading: _loading,
+        ),
+        const SizedBox(height: AppSpacing.x3),
+        AppButton(
+          label: 'Voltar',
+          variant: AppButtonVariant.secondary,
+          onPressed: _loading
+              ? null
+              : () => setState(() {
+                    _codeSent = false;
+                    _codeCtrl.clear();
+                    _error = null;
+                  }),
+        ),
+      ];
 
   String _firebaseMessage(String code) => switch (code) {
         'user-not-found' || 'wrong-password' || 'invalid-credential' =>

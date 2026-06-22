@@ -34,12 +34,14 @@ rejeitado com **403** antes do handler.
 
 | Método | Rota | Auth |
 |---|---|---|
-| GET | `/health` | Pública |
+| GET | `/health` | Pública (liveness) |
+| GET | `/healthz` | Pública (readiness — valida o SQLCipher) |
 | POST | `/auth/email-code/start` | Pública |
 | POST | `/auth/email-code/verify` | Pública |
-| POST | `/auth/register` | Firebase JWT (user local pode não existir ainda) |
+| POST | `/auth/register` | Firebase JWT (idempotente: cria, recupera ou retorna a conta) |
 | POST | `/auth/login` | Firebase JWT (user local precisa existir) |
 | GET | `/auth/me` | Firebase JWT **ou** Device Token |
+| PUT | `/auth/me` | Firebase JWT (troca o modo da conta) |
 | DELETE | `/auth/me` | Firebase JWT |
 | GET | `/blocklist` | Firebase JWT **ou** Device Token |
 | POST | `/blocklist` | Firebase JWT |
@@ -47,9 +49,16 @@ rejeitado com **403** antes do handler.
 | PUT | `/blocklist/adult-filter` | Firebase JWT |
 | POST | `/devices/register` | Firebase JWT |
 | GET | `/devices` | Firebase JWT **ou** Device Token |
+| GET | `/devices/events` | Firebase JWT (só o pai) |
 | POST | `/devices/link/generate` | Firebase JWT |
 | POST | `/devices/link/confirm` | Pública |
+| POST | `/devices/tamper` | Pública (Device Token **no corpo**) |
 | POST | `/devices/{id}/revoke` | Firebase JWT |
+
+> **CORS + rate-limit (A4):** as rotas públicas de auth (`/auth/*`) e
+> `/devices/link/confirm` / `/devices/tamper` passam por **rate-limit por IP**
+> (GCRA via `tower_governor`); origens são restritas por **allowlist**
+> (`CORS_ALLOWED_ORIGINS`, default cobre o dev). Mobile (HTTP nativo) não usa CORS.
 
 ## Auth
 
@@ -64,18 +73,39 @@ código, mas o email precisa vir verificado nas claims.
 - **POST `/auth/email-code/verify`** — body `{ email, code }` → `{ email_verification_token }`.
   Máx. 5 tentativas; token expira em 15 min. O backend guarda **HMAC-SHA256** do código e do token.
 - **POST `/auth/register`** — header Firebase JWT; body `{ email, display_name, mode,
-  email_verification_token? }` → `User`. `email_verification_token` é obrigatório quando o provider é
-  `password`. O email do JWT vence o do body (divergência → 400). Erros: 400 (sem verificação /
-  email divergente / provider externo sem email verificado), 409 (UID já tem user local).
+  email_verification_token? }` → `User`. **Idempotente e resiliente à identidade** (o nome é
+  histórico; na prática "garante que a conta deste login exista"):
+    1. Já existe conta para o `firebase_uid` → retorna-a (**não é mais 409**).
+    2. Não existe para o UID, mas existe conta com este **email** (presa a um UID antigo — conta
+       órfã) → **reclaim**: reassocia a conta a este UID (preserva `mode`/`id`/`created_at`). Destrava
+       o email, que antes ficava preso pelo `UNIQUE`.
+    3. Nada existe → cria a conta.
+  A prova de posse do email é a mesma do cadastro: `password` exige `email_verification_token`;
+  provider verificado (Google) exige `email_verified` no claim. O email do JWT vence o do body
+  (divergência → 400). Erros: 400 (sem verificação / email divergente / provider externo sem email
+  verificado).
 - **POST `/auth/login`** — header Firebase JWT, body vazio → `User`; 404 se ainda não há user local
   (cliente deve chamar `/auth/register`).
 - **GET `/auth/me`** — Firebase JWT ou Device Token (com token, retorna o `User` do pai).
+- **PUT `/auth/me`** — Firebase JWT; body `{ mode }` (`personal`|`parental`) → `User`. Troca o modo da
+  conta sem recriá-la — não mexe em devices/blocklist/vínculos; a regra "pai imune" passa a valer (ou
+  deixa de valer) no próximo sync. Device Token → 403.
 - **DELETE `/auth/me`** — Firebase JWT. Apaga user local + dependentes por cascade. O frontend é
   responsável por apagar a conta no Firebase (não há Firebase Admin SDK no backend).
+
+## Health
+
+- **GET `/health`** → `OK` (liveness simples).
+- **GET `/healthz`** → `{ "status": "ok" }` (200) se um `SELECT 1` no SQLCipher
+  passa; `{ "status": "error" }` (503) se o banco está inacessível. Usado por
+  health-checks de infra.
 
 ## Blocklist
 
 - **GET `/blocklist`** → array de `BlockedItem` (ordenado por `created_at DESC`).
+  Suporta **ETag/`If-None-Match`** (B2): devolve o header `ETag`; se o cliente
+  reenviar o mesmo ETag e a lista não mudou, responde **`304 Not Modified`**
+  (sem corpo). O poll do filho (desktop e mobile) usa isto para baratear ~30–60s.
 - **POST `/blocklist`** — body `{ item_type, value }` → `BlockedItem`. `domain` passa por
   `normalize_domain`; `app`/`keyword` recebem `trim().lowercase()`. `value` vazio → 400; domínio sem
   ponto → 400; duplicata `(user_id, item_type, value)` → 409.
@@ -98,6 +128,15 @@ código, mas o email precisa vir verificado nas claims.
   retornado **uma única vez** — o app do filho deve guardá-lo em storage seguro.
 - **POST `/devices/{id}/revoke`** — Firebase JWT → `{ message }`. Marca `device_tokens.revoked_at` e
   o link como `revoked`; 404 se não for um filho válido do user.
+- **POST `/devices/tamper`** (pública) — body `{ device_token, kind }` →
+  `{ message }`. O device do filho reporta adulteração (C2.1/C2.2). Autentica-se
+  pelo **Device Token no corpo** (com ou sem prefixo `dt_`), não pelo header —
+  assim a regra read-only do middleware fica intocada. `kind` ∈
+  {`vpn_revoked`,`vpn_settings_opened`,`dns_settings_opened`}. Token inválido/
+  revogado → 401; `kind` desconhecido → 400.
+- **GET `/devices/events`** — Firebase JWT (só o pai) → array de `DeviceEvent`
+  (`{ id, user_id, device_id, kind, created_at, acknowledged_at }`), mais recentes
+  primeiro (limite 100). Device Token (filho) → 403.
 
 ### Fluxo de vinculação parental (resumo)
 

@@ -15,6 +15,7 @@
     import { toast } from '$lib/stores/toast';
     import BlockList from '$lib/components/BlockList.svelte';
     import AddBlockModal from '$lib/components/AddBlockModal.svelte';
+    import Skeleton from '$lib/components/ui/Skeleton.svelte';
     import type { BlockedType } from '$lib/types';
 
     let block: BlockingState = $state({
@@ -134,7 +135,7 @@
                     Bloqueio {block.status.enabled ? 'ativo' : 'pausado'}
                 </div>
                 <div class="mt-0.5 text-xs text-text-muted">
-                    {block.status.item_count}
+                    <span class="num">{block.status.item_count}</span>
                     {block.status.item_count === 1 ? 'item' : 'itens'} na lista
                 </div>
             </div>
@@ -187,7 +188,15 @@
     </div>
 
     {#if block.loading}
-        <div class="py-8 text-center text-xs text-text-muted">Carregando…</div>
+        <div class="card divide-y divide-border overflow-hidden">
+            {#each [0, 1, 2] as i (i)}
+                <div class="flex items-center gap-4 px-5 py-3.5">
+                    <Skeleton class="h-5 w-12 rounded-full" />
+                    <Skeleton class="h-4 w-40 max-w-[45%]" />
+                    <Skeleton class="ml-auto hidden h-3 w-16 sm:block" />
+                </div>
+            {/each}
+        </div>
     {:else}
         <BlockList items={block.items} onremove={handleRemove} readOnly={isChild} />
     {/if}

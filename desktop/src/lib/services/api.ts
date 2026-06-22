@@ -10,6 +10,7 @@ import { currentAuthProvider } from './auth-provider';
 import type {
     AdultFilterSettings,
     BlockedItem,
+    BlockMode,
     ConfirmLinkRequest,
     ConfirmLinkResponse,
     CreateBlockedItemRequest,
@@ -36,6 +37,16 @@ export class ApiError extends Error {
         super(message);
         this.name = 'ApiError';
     }
+}
+
+// Último ETag visto no GET /blocklist. Usado pelo auto-sync para enviar
+// If-None-Match e receber 304 quando nada mudou — evita re-popular o engine
+// (e limpar o cache DNS) a cada tick. Resetado ao (re)iniciar o auto-sync,
+// pois o ETag é por-usuário.
+let blocklistEtag: string | null = null;
+
+export function resetBlocklistEtag(): void {
+    blocklistEtag = null;
 }
 
 async function request<T>(
@@ -97,6 +108,61 @@ async function request<T>(
     return res.json() as Promise<T>;
 }
 
+// GET /blocklist condicional (If-None-Match). Devolve `null` em 304 (nada
+// mudou) e a lista nova em 200, atualizando o ETag. Mantém o retry single-shot
+// em 401 do Firebase (igual ao `request`). Usado pelo poll de auto-sync.
+async function listBlocklistConditional(retriedOnce = false): Promise<BlockedItem[] | null> {
+    const provider = currentAuthProvider();
+    const authHeader = await provider.getAuthHeader();
+    const headers: Record<string, string> = {};
+    if (authHeader) headers['Authorization'] = authHeader;
+    if (blocklistEtag) headers['If-None-Match'] = blocklistEtag;
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let res: Response;
+    try {
+        res = await fetch(`${BASE_URL}/blocklist`, {
+            method: 'GET',
+            headers,
+            signal: controller.signal,
+        });
+    } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+            throw new ApiError(
+                0,
+                'O backend demorou demais para responder. Verifique se a API local está rodando.',
+            );
+        }
+        throw err;
+    } finally {
+        window.clearTimeout(timeoutId);
+    }
+
+    if (res.status === 401 && !retriedOnce && authHeader) {
+        const refreshed = await provider.refresh();
+        if (refreshed) return listBlocklistConditional(true);
+    }
+
+    if (res.status === 304) return null;
+
+    if (!res.ok) {
+        const text = await res.text();
+        let msg = text || res.statusText;
+        try {
+            const parsed = JSON.parse(text);
+            if (typeof parsed?.error === 'string') msg = parsed.error;
+        } catch {
+            /* corpo não-JSON, usa text cru */
+        }
+        throw new ApiError(res.status, msg);
+    }
+
+    const etag = res.headers.get('ETag');
+    if (etag) blocklistEtag = etag;
+    return (await res.json()) as BlockedItem[];
+}
+
 export const api = {
     // ---- auth ----
     startEmailVerification: (payload: EmailCodeStartRequest) =>
@@ -112,10 +178,16 @@ export const api = {
 
     me: () => request<User>('GET', '/auth/me'),
 
+    // Troca o modo da conta (personal↔parental) sem recriá-la. Só Firebase JWT.
+    updateMode: (mode: BlockMode) => request<User>('PUT', '/auth/me', { mode }),
+
     deleteAccount: () => request<SuccessResponse>('DELETE', '/auth/me'),
 
     // ---- blocklist ----
     listBlocklist: () => request<BlockedItem[]>('GET', '/blocklist'),
+
+    // GET condicional usado pelo auto-sync: `null` quando nada mudou (304).
+    listBlocklistIfChanged: () => listBlocklistConditional(),
 
     createBlockedItem: (payload: CreateBlockedItemRequest) =>
         request<BlockedItem>('POST', '/blocklist', payload),

@@ -10,10 +10,11 @@
 //     mexer no resto do código.
 //
 // Env vars lidas:
-//   PORT                → porta TCP (default 3000)
-//   DATABASE_PATH       → caminho do arquivo .db (default "dopablocker.db")
-//   SQLCIPHER_KEY       → chave AES do SQLCipher (default inseguro em dev)
-//   FIREBASE_PROJECT_ID → usado na validação de `iss` e `aud` do Firebase JWT
+//   PORT                  → porta TCP (default 3000)
+//   DATABASE_PATH         → caminho do arquivo .db (default "dopablocker.db")
+//   SQLCIPHER_KEY         → chave AES do SQLCipher (default inseguro em dev)
+//   FIREBASE_PROJECT_ID   → usado na validação de `iss` e `aud` do Firebase JWT
+//   CORS_ALLOWED_ORIGINS  → allowlist de origens (CSV). Default: origens de dev.
 // =============================================================================
 
 use dotenvy::dotenv;
@@ -38,7 +39,21 @@ pub struct AppConfig {
     pub email_delivery_mode: EmailDeliveryMode,
     /// ConfiguraÃ§Ã£o SMTP opcional. Se ausente, o endpoint de envio retorna 503.
     pub smtp: Option<SmtpConfig>,
+    /// Origens permitidas no CORS (allowlist). Em dev, default cobre Vite e o
+    /// WebView do Tauri; em prod, definir `CORS_ALLOWED_ORIGINS` com o domínio
+    /// real do frontend. O mobile (HTTP nativo) não passa por CORS.
+    pub cors_allowed_origins: Vec<String>,
 }
+
+/// Origens liberadas por padrão quando `CORS_ALLOWED_ORIGINS` não é definida.
+/// Cobre o dev server do Vite e os esquemas de origem do WebView do Tauri.
+const DEFAULT_CORS_ORIGINS: &[&str] = &[
+    "http://localhost:5173",
+    "http://localhost:1420",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "tauri://localhost",
+];
 
 #[derive(Debug, Clone)]
 pub struct SmtpConfig {
@@ -90,6 +105,9 @@ impl AppConfig {
 
         let smtp = read_smtp_config();
 
+        let cors_allowed_origins =
+            parse_cors_origins(env::var("CORS_ALLOWED_ORIGINS").ok().as_deref());
+
         Self {
             port,
             database_path,
@@ -98,7 +116,24 @@ impl AppConfig {
             email_code_secret,
             email_delivery_mode,
             smtp,
+            cors_allowed_origins,
         }
+    }
+}
+
+/// Faz o parsing da allowlist de CORS a partir do CSV em `CORS_ALLOWED_ORIGINS`.
+/// Vazio/ausente → cai no default de desenvolvimento (`DEFAULT_CORS_ORIGINS`).
+fn parse_cors_origins(value: Option<&str>) -> Vec<String> {
+    match value {
+        Some(raw) if !raw.trim().is_empty() => raw
+            .split(',')
+            .map(|origin| origin.trim().to_string())
+            .filter(|origin| !origin.is_empty())
+            .collect(),
+        _ => DEFAULT_CORS_ORIGINS
+            .iter()
+            .map(|origin| origin.to_string())
+            .collect(),
     }
 }
 
@@ -135,7 +170,23 @@ fn read_smtp_config() -> Option<SmtpConfig> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_email_delivery_mode, EmailDeliveryMode};
+    use super::{parse_cors_origins, parse_email_delivery_mode, EmailDeliveryMode};
+
+    #[test]
+    fn parses_cors_origins_from_csv() {
+        assert_eq!(
+            parse_cors_origins(Some("http://a.com, https://b.com ,")),
+            vec!["http://a.com".to_string(), "https://b.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn cors_origins_fall_back_to_dev_defaults() {
+        let from_none = parse_cors_origins(None);
+        let from_blank = parse_cors_origins(Some("   "));
+        assert!(from_none.contains(&"http://localhost:5173".to_string()));
+        assert!(from_blank.contains(&"http://localhost:5173".to_string()));
+    }
 
     #[test]
     fn parses_email_delivery_mode_for_smtp_and_log() {

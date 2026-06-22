@@ -3,28 +3,24 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/auth_provider.dart';
 import '../providers/blocking_provider.dart';
-import '../providers/stats_provider.dart';
+import '../providers/device_event_provider.dart';
+import '../providers/device_provider.dart';
+import '../providers/nav_provider.dart';
+import '../providers/permissions_provider.dart';
 import '../theme.dart';
-import '../widgets/mini_bar_chart.dart';
 import '../widgets/ui_kit.dart';
 
-/// Aba "Início" — junta o status de proteção, os marcos do dia e o dashboard
-/// do mês (os três mockups com "Início" selecionado).
+/// Aba "Início" — hub de status honesto: estado real da proteção, camadas ativas
+/// e (em conta parental) um resumo dos filhos. Sem estatísticas mock — só dado
+/// que existe de fato no engine/backend.
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
-
-  String _hm(Duration d) {
-    final h = d.inHours;
-    final m = d.inMinutes % 60;
-    if (h == 0) return '${m}min';
-    if (m == 0) return '${h}h';
-    return '${h}h ${m}min';
-  }
 
   String _firstName(WidgetRef ref) {
     final auth = ref.read(authProvider);
     if (auth is AuthAuthenticated) {
-      return auth.user.displayName.split(' ').first;
+      final first = auth.user.displayName.split(' ').first;
+      return first.isEmpty ? '' : first;
     }
     return '';
   }
@@ -32,7 +28,8 @@ class HomeScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final blocking = ref.watch(blockingProvider);
-    final stats = ref.watch(statsProvider);
+    final auth = ref.watch(authProvider);
+    final isParental = auth is AuthAuthenticated && auth.user.isParental;
     final name = _firstName(ref);
 
     return Scaffold(
@@ -41,10 +38,8 @@ class HomeScreen extends ConsumerWidget {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('INÍCIO',
-                style: TextStyle(color: AppColors.textFaint, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1.4)),
-            Text(name.isEmpty ? 'Olá 👋' : 'Olá, $name',
-                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
+            const Text('INÍCIO', style: AppType.label),
+            Text(name.isEmpty ? 'Olá' : 'Olá, $name', style: AppType.h1),
           ],
         ),
       ),
@@ -53,55 +48,70 @@ class HomeScreen extends ConsumerWidget {
         children: [
           _ProtectionHero(blocking: blocking),
           const SizedBox(height: 24),
-          _MarcosSection(stats: stats, fmt: _hm),
+          const _LayersSection(),
           const SizedBox(height: 24),
-          _MonthSection(stats: stats, fmt: _hm),
+          _SummarySection(blocking: blocking, isParental: isParental),
+          if (isParental) ...[
+            const SizedBox(height: 24),
+            const _ChildrenSummary(),
+          ],
+          const SizedBox(height: 24),
+          _ManageButton(),
         ],
       ),
     );
   }
 }
 
-// ── Hero: status de proteção ────────────────────────────────────────────────
+// ── Hero: status de proteção (real) ─────────────────────────────────────────
 
 class _ProtectionHero extends ConsumerWidget {
   final BlockingState blocking;
   const _ProtectionHero({required this.blocking});
 
+  String _elapsed(DateTime since) {
+    final d = DateTime.now().difference(since);
+    final h = d.inHours;
+    final m = d.inMinutes % 60;
+    if (h > 0) return 'ativo há ${h}h ${m}min';
+    return 'ativo há ${m}min';
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final active = blocking.isBlockingActive;
     final color = active ? AppColors.success : AppColors.warning;
-    final elapsed = active && blocking.activeSince != null
-        ? DateTime.now().difference(blocking.activeSince!)
-        : Duration.zero;
-    final elapsedLabel = elapsed.inHours > 0
-        ? '${elapsed.inHours}h ${elapsed.inMinutes % 60}min ativo'
-        : '${elapsed.inMinutes}min ativo';
+    final subtitle = active
+        ? (blocking.activeSince != null
+            ? _elapsed(blocking.activeSince!)
+            : 'Proteção ligada')
+        : 'Toque para reativar a proteção';
 
     return AppCard(
+      highlight: active,
       padding: const EdgeInsets.all(20),
       child: Column(
         children: [
-          Container(
+          AnimatedContainer(
+            duration: AppDurations.enter,
+            curve: AppCurves.out,
             width: 64,
             height: 64,
             decoration: BoxDecoration(
-              color: color.withOpacity(0.14),
+              color: color.withValues(alpha: 0.14),
               shape: BoxShape.circle,
             ),
-            child: Icon(active ? Icons.check_rounded : Icons.warning_amber_rounded, color: color, size: 34),
+            child: Icon(
+              active ? Icons.shield_rounded : Icons.gpp_maybe_outlined,
+              color: color,
+              size: 32,
+            ),
           ),
           const SizedBox(height: 14),
-          Text(active ? 'Tudo certo' : 'Proteção desligada',
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+          Text(active ? 'Protegido' : 'Proteção pausada', style: AppType.h2),
           const SizedBox(height: 4),
-          Text(
-            active ? 'Protegido · $elapsedLabel' : 'Toque para reativar o bloqueio',
-            style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-          ),
+          Text(subtitle, style: AppType.bodySm, textAlign: TextAlign.center),
           const SizedBox(height: 18),
-          // Toggle de proteção
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
             decoration: BoxDecoration(
@@ -110,54 +120,97 @@ class _ProtectionHero extends ConsumerWidget {
             ),
             child: Row(
               children: [
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Proteção', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
-                      Text('desligar exige senha',
-                          style: TextStyle(color: AppColors.textFaint, fontSize: 12)),
+                      Text('Proteção neste aparelho',
+                          style: AppType.body.copyWith(fontSize: 14, fontWeight: FontWeight.w600)),
+                      Text(active ? 'Bloqueio em execução' : 'Bloqueio pausado',
+                          style: AppType.caption.copyWith(color: AppColors.textFaint)),
                     ],
                   ),
                 ),
                 Switch(
                   value: active,
-                  activeColor: Colors.white,
+                  activeThumbColor: Colors.white,
                   activeTrackColor: AppColors.success,
                   inactiveThumbColor: AppColors.textSecondary,
                   inactiveTrackColor: AppColors.surface,
                   trackOutlineColor: WidgetStateProperty.all(Colors.transparent),
-                  onChanged: (v) {
-                    if (!v) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Desligar exige senha (em breve)')),
-                      );
-                    }
-                    ref.read(blockingProvider.notifier).toggleBlocking(v);
-                  },
+                  onChanged: (v) => ref.read(blockingProvider.notifier).toggleBlocking(v),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 16),
-          const Align(alignment: Alignment.centerLeft, child: SectionLabel('Camadas ativas')),
-          _LayerRow(
-            icon: Icons.shield_outlined,
-            title: 'Filtro adulto',
-            subtitle: '2,1M domínios',
-            chip: blocking.isAdultFilterEnabled ? AppChip.success('ativo') : const AppChip('off'),
-          ),
-          const SizedBox(height: 8),
-          _LayerRow(
-            icon: Icons.center_focus_strong_outlined,
-            title: 'Modo foco',
-            subtitle: 'termina às 14h',
-            chip: AppChip.warning('Liber'),
           ),
         ],
       ),
     );
   }
+}
+
+// ── Camadas ativas (real) ───────────────────────────────────────────────────
+
+class _LayersSection extends ConsumerWidget {
+  const _LayersSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final blocking = ref.watch(blockingProvider);
+    final perms = ref.watch(protectionPermissionsProvider);
+    final on = blocking.isBlockingActive;
+
+    // Chip do bloqueio de apps: depende de haver apps na lista + permissão.
+    Widget appsChip() {
+      if (blocking.appCount == 0) return const AppChip('0 apps');
+      if (!perms.accessibilityEnabled) return AppChip.warning('ativar');
+      return on ? AppChip.success('ativo') : const AppChip('pausado');
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionLabel('Camadas ativas'),
+        AppCard(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          child: Column(
+            children: [
+              _LayerRow(
+                icon: Icons.public,
+                title: 'Bloqueio de sites',
+                subtitle: 'Sinkhole de DNS',
+                chip: on ? AppChip.success('ativo') : const AppChip('pausado'),
+              ),
+              const _LayerDivider(),
+              _LayerRow(
+                icon: Icons.smartphone_outlined,
+                title: 'Bloqueio de apps',
+                subtitle: '${blocking.appCount} na lista',
+                chip: appsChip(),
+                onTap: () => ref.read(navIndexProvider.notifier).state = NavTab.bloqueios,
+              ),
+              const _LayerDivider(),
+              _LayerRow(
+                icon: Icons.shield_outlined,
+                title: 'Filtro adulto',
+                subtitle: 'Resolver de família',
+                chip: blocking.isAdultFilterEnabled
+                    ? AppChip.success('ativo')
+                    : const AppChip('off'),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _LayerDivider extends StatelessWidget {
+  const _LayerDivider();
+  @override
+  Widget build(BuildContext context) =>
+      const Divider(color: AppColors.divider, height: 1, indent: 56, endIndent: 12);
 }
 
 class _LayerRow extends StatelessWidget {
@@ -165,93 +218,67 @@ class _LayerRow extends StatelessWidget {
   final String title;
   final String subtitle;
   final Widget chip;
-  const _LayerRow({required this.icon, required this.title, required this.subtitle, required this.chip});
+  final VoidCallback? onTap;
+  const _LayerRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.chip,
+    this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceHigh,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, size: 20, color: AppColors.textSecondary),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                Text(subtitle, style: const TextStyle(color: AppColors.textFaint, fontSize: 12)),
-              ],
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: AppColors.textSecondary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: AppType.body.copyWith(fontSize: 14, fontWeight: FontWeight.w600)),
+                  Text(subtitle, style: AppType.caption.copyWith(color: AppColors.textFaint)),
+                ],
+              ),
             ),
-          ),
-          chip,
-        ],
+            chip,
+          ],
+        ),
       ),
     );
   }
 }
 
-// ── Marcos (hoje + semana) ──────────────────────────────────────────────────
+// ── Resumo (real) ───────────────────────────────────────────────────────────
 
-class _MarcosSection extends StatelessWidget {
-  final StatsData stats;
-  final String Function(Duration) fmt;
-  const _MarcosSection({required this.stats, required this.fmt});
+class _SummarySection extends StatelessWidget {
+  final BlockingState blocking;
+  final bool isParental;
+  const _SummarySection({required this.blocking, required this.isParental});
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return Row(
       children: [
-        const SectionLabel('Marcos'),
-        AppCard(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('HOJE VOCÊ POUPOU',
-                  style: TextStyle(color: AppColors.textFaint, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1.2)),
-              const SizedBox(height: 6),
-              Text(fmt(stats.savedToday),
-                  style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w800, letterSpacing: -1)),
-              const SizedBox(height: 4),
-              Text('${stats.interceptedToday} tentativas interceptadas',
-                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
-            ],
+        Expanded(
+          child: _MiniStat(
+            label: 'Itens bloqueados',
+            value: '${blocking.activeCount}',
           ),
         ),
-        const SizedBox(height: 12),
-        AppCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('Semana', style: TextStyle(fontWeight: FontWeight.w600)),
-                  AppChip.accent('+${stats.weekDeltaPct.toStringAsFixed(0)}%'),
-                ],
-              ),
-              const SizedBox(height: 16),
-              MiniBarChart(
-                values: stats.weekBars,
-                labels: stats.weekLabels,
-                highlightIndex: stats.weekBars.length - 1,
-              ),
-            ],
+        const SizedBox(width: 12),
+        Expanded(
+          child: _MiniStat(
+            label: 'Modo',
+            value: isParental ? 'Pais' : 'Pessoal',
+            mono: false,
           ),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(child: _MiniStat(label: 'Sequência', value: '${stats.streakDays} dias')),
-            const SizedBox(width: 12),
-            Expanded(child: _MiniStat(label: 'Total', value: fmt(stats.totalSaved))),
-          ],
         ),
       ],
     );
@@ -261,7 +288,8 @@ class _MarcosSection extends StatelessWidget {
 class _MiniStat extends StatelessWidget {
   final String label;
   final String value;
-  const _MiniStat({required this.label, required this.value});
+  final bool mono;
+  const _MiniStat({required this.label, required this.value, this.mono = true});
 
   @override
   Widget build(BuildContext context) {
@@ -269,76 +297,59 @@ class _MiniStat extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label.toUpperCase(),
-              style: const TextStyle(color: AppColors.textFaint, fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 1)),
+          Text(label.toUpperCase(), style: AppType.label),
           const SizedBox(height: 6),
-          Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+          Text(
+            value,
+            style: mono
+                ? AppType.mono(size: 22, weight: FontWeight.w700)
+                : AppType.h2,
+          ),
         ],
       ),
     );
   }
 }
 
-// ── Seu mês (dashboard detalhado) ───────────────────────────────────────────
+// ── Resumo dos filhos (parental, real) ──────────────────────────────────────
 
-class _MonthSection extends StatelessWidget {
-  final StatsData stats;
-  final String Function(Duration) fmt;
-  const _MonthSection({required this.stats, required this.fmt});
+class _ChildrenSummary extends ConsumerWidget {
+  const _ChildrenSummary();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final devices = ref.watch(deviceProvider).children;
+    final alerts = ref.watch(deviceEventsProvider).events;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SectionLabel('Seu mês'),
+        const SectionLabel('Filhos'),
         AppCard(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          onTap: () => ref.read(navIndexProvider.notifier).state = NavTab.filhos,
+          padding: const EdgeInsets.all(16),
+          child: Row(
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('VOCÊ RECUPEROU',
-                      style: TextStyle(color: AppColors.textFaint, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1.2)),
-                  AppChip.accent('+${stats.monthDeltaPct.toStringAsFixed(0)}%'),
-                ],
+              const InitialBadge('F', icon: Icons.group_outlined),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('${devices.length} ${devices.length == 1 ? 'dispositivo' : 'dispositivos'}',
+                        style: AppType.body.copyWith(fontSize: 15, fontWeight: FontWeight.w600)),
+                    Text(
+                      alerts.isEmpty
+                          ? 'Nenhum alerta'
+                          : '${alerts.length} ${alerts.length == 1 ? 'alerta' : 'alertas'} de adulteração',
+                      style: AppType.caption.copyWith(
+                        color: alerts.isEmpty ? AppColors.textFaint : AppColors.danger,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 6),
-              Text(fmt(stats.recoveredThisMonth),
-                  style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: -1)),
-              const SizedBox(height: 2),
-              const Text('vs. mês anterior',
-                  style: TextStyle(color: AppColors.textSecondary, fontSize: 13)),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-        AppCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SectionLabel('Por semana'),
-              MiniBarChart(
-                values: stats.monthBars,
-                labels: stats.monthLabels,
-                highlightIndex: stats.monthBars.length - 1,
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-        AppCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SectionLabel('Mais bloqueados'),
-              for (final t in stats.topBlocked) ...[
-                _TopBlockedRow(item: t),
-                if (t != stats.topBlocked.last) const SizedBox(height: 12),
-              ],
+              const Icon(Icons.chevron_right, color: AppColors.textSecondary),
             ],
           ),
         ),
@@ -347,34 +358,16 @@ class _MonthSection extends StatelessWidget {
   }
 }
 
-class _TopBlockedRow extends StatelessWidget {
-  final TopBlocked item;
-  const _TopBlockedRow({required this.item});
+// ── Ação rápida ─────────────────────────────────────────────────────────────
 
+class _ManageButton extends ConsumerWidget {
   @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(item.domain, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-            Text('${(item.fraction * 100).round()}%',
-                style: const TextStyle(color: AppColors.textSecondary, fontSize: 13, fontWeight: FontWeight.w600)),
-          ],
-        ),
-        const SizedBox(height: 6),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: LinearProgressIndicator(
-            value: item.fraction,
-            minHeight: 6,
-            backgroundColor: AppColors.surfaceHigh,
-            valueColor: const AlwaysStoppedAnimation(AppColors.primary),
-          ),
-        ),
-      ],
+  Widget build(BuildContext context, WidgetRef ref) {
+    return AppButton(
+      label: 'Gerenciar bloqueios',
+      icon: Icons.tune,
+      variant: AppButtonVariant.secondary,
+      onPressed: () => ref.read(navIndexProvider.notifier).state = NavTab.bloqueios,
     );
   }
 }

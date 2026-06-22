@@ -46,6 +46,8 @@ privacidade do Google, SDK pesado (Flutter + Svelte) e a confusão JWKS↔HMAC. 
 - **Descartado:** migrar tudo para um BaaS único (ex.: Supabase) — exigiria mexer no engine que lê do
   SQLCipher local e jogar fora um backend Rust testado (a parte boa); troca a dependência do Google
   pela de outro fornecedor. Pior ROI para 1 dev.
+- **Independente de A1:** o **beco sem saída de identidade** (conta órfã prendendo o email pelo
+  `UNIQUE`) já foi resolvido sem migrar de provedor — ver **A5**.
 
 ### A2. Device Token (`dt_`, SHA-256, read-only no middleware) — **MANTER** `[IMPLEMENTADO]`
 Melhor decisão de auth do projeto: read-only forçado por **método HTTP** no middleware (impossível
@@ -54,9 +56,29 @@ esquecer numa rota nova), hash em vez de plaintext. Follow-up de rotação autom
 ### A3. Verificação de email por código (HMAC) — **MANTER / reposicionar** `[IMPLEMENTADO]`
 Bem feita. Após A1, deixa de ser "complemento do Firebase" e vira o **núcleo de identidade**.
 
-### A4. CORS + rate limiting + política de senha (H1/H2/H3) — **ADICIONAR** `[PROPOSTO]`
-Hoje `CorsLayer::permissive()` e sem rate-limit em `/auth/*` (rotas públicas). Convite a abuso —
-pior ainda após A1 (passa a guardar senha). `tower_governor` + CORS por allowlist.
+### A5. Conta resiliente à identidade (register idempotente + reclaim) + troca de modo — **ADICIONAR** `[IMPLEMENTADO]`
+A criação de conta vive em dois sistemas não transacionais (Firebase = identidade; backend =
+registro). Antes, se a etapa do backend falhava ou a conta era recriada no Firebase, sobrava uma
+conta órfã e o `email UNIQUE` prendia o recadastro num **beco sem saída** (`register` 409 → `login`
+404 → "use outro email"). A tela "concluir cadastro local" só contornava isso.
+- **Feito:** `POST /auth/register` virou **idempotente** (mesmo `firebase_uid` → retorna a conta) e
+  ganhou **reclaim**: se existe conta órfã com o mesmo email, reassocia ao `firebase_uid` atual,
+  provando posse do email pelo mesmo mecanismo do cadastro (código p/ `password`; `email_verified`
+  p/ provider verificado). O `email UNIQUE` deixou de ser beco sem saída (rebind, sem duplicar
+  linha). A fase `pending_local_registration` virou um simples "tentar de novo" transitório, com
+  paridade desktop↔mobile.
+- **Troca de modo:** `PUT /auth/me` permite alternar `personal`↔`parental` **sem recriar a conta**
+  (some o motivo nº 1 para apagar+recriar, que disparava justamente o beco sem saída). UI nas
+  Configurações das duas plataformas.
+- **Por que não A1 inteiro:** isto resolve a dor real (recuperação de conta + troca de modo) com
+  esforço baixo e **sem** quebrar logins; a migração de provedor (A1) continua proposta, não bloqueia.
+- **Esforço baixo · Impacto alto · Risco baixo.**
+
+### A4. CORS + rate limiting + política de senha (H1/H2/H3) — **ADICIONAR** `[IMPLEMENTADO]`
+Feito: rate-limit por IP (GCRA via `tower_governor`, `SmartIpKeyExtractor`) nas rotas públicas de
+auth + `/devices/link/confirm` / `/devices/tamper`, e **CORS por allowlist** (`CORS_ALLOWED_ORIGINS`,
+default cobre dev) no lugar do `CorsLayer::permissive()`. A política de senha não se aplica enquanto
+o Firebase guarda senhas (A1 adiado).
 - **Esforço baixo · Impacto alto · Risco baixo.** Quick win pré-release.
 
 ## B. Armazenamento & sync
@@ -65,12 +87,13 @@ pior ainda após A1 (passa a guardar senha). `tower_governor` + CORS por allowli
 Coerente: o engine precisa ler a blocklist offline; SQLCipher protege contra acesso físico ao disco
 (relevante no device do filho). Não mexer.
 
-### B2. Sync por polling, sem realtime — **MANTER + completar** `[IMPLEMENTADO/PROPOSTO]`
+### B2. Sync por polling, sem realtime — **MANTER** `[IMPLEMENTADO]`
 Para controle parental, propagação em segundos é aceitável; realtime (SSE/WebSocket) adicionaria
-infra de conexão persistente que 1 dev não quer manter. Falta o **poll periódico** no device do
-filho (gap F2) — hoje só sincroniza em load/mutação.
-- **Recomendado:** poll a cada ~30–60s com `ETag`/`updated_at` → 304 barato. **Esforço baixo ·
-  Impacto médio · Risco baixo.**
+infra de conexão persistente que 1 dev não quer manter. O **poll periódico** (~30–45s, com
+`ETag`/`If-None-Match` → 304 barato) está ativo em **todas as sessões**: device-filho e modo
+pessoal/pai, em desktop e mobile — então mudanças feitas em um device da conta propagam aos demais
+sem reiniciar o app. Realtime (SSE/WebSocket) segue como **proposta** futura, se a latência de
+~30–45s incomodar.
 
 ### B3. Fila offline de writes (F7) — **ADIAR** `[DECIDIDO]`
 O filho é read-only; pai/pessoal normalmente estão online ao editar. Ganho pequeno vs. complexidade

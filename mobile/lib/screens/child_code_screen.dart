@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/auth_provider.dart';
+import '../theme.dart';
+import '../widgets/ui_kit.dart';
 
 /// Tela do fluxo Filhos — apenas input de 6 dígitos, sem login/cadastro.
 /// Espelha desktop/src/routes/onboarding/child/+page.svelte.
@@ -53,31 +55,43 @@ class _ChildCodeScreenState extends ConsumerState<ChildCodeScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Código de vinculação')),
       body: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(AppSpacing.x6),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const SizedBox(height: 24),
-            const Text(
+            const SizedBox(height: AppSpacing.x6),
+            Text(
               'Digite o código de 6 dígitos gerado pelo responsável.',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 16),
+              style: AppType.body.copyWith(color: AppColors.textSecondary),
             ),
-            const SizedBox(height: 32),
+            const SizedBox(height: AppSpacing.x8),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: List.generate(6, (i) => _buildDigitField(i)),
             ),
             if (_error != null) ...[
-              const SizedBox(height: 16),
-              Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)),
+              const SizedBox(height: AppSpacing.x4),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.error_outline, size: 14, color: AppColors.danger),
+                  const SizedBox(width: AppSpacing.x1),
+                  Flexible(
+                    child: Text(
+                      _error!,
+                      textAlign: TextAlign.center,
+                      style: AppType.caption.copyWith(color: AppColors.danger),
+                    ),
+                  ),
+                ],
+              ),
             ],
-            const SizedBox(height: 32),
-            FilledButton(
+            const SizedBox(height: AppSpacing.x8),
+            AppButton(
+              label: 'Confirmar',
+              loading: _loading,
               onPressed: _loading ? null : _confirm,
-              child: _loading
-                  ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Text('Confirmar'),
             ),
           ],
         ),
@@ -87,7 +101,7 @@ class _ChildCodeScreenState extends ConsumerState<ChildCodeScreen> {
 
   Widget _buildDigitField(int index) {
     return Container(
-      width: 44,
+      width: 46,
       height: 56,
       margin: const EdgeInsets.symmetric(horizontal: 4),
       child: TextField(
@@ -97,7 +111,21 @@ class _ChildCodeScreenState extends ConsumerState<ChildCodeScreen> {
         keyboardType: TextInputType.number,
         maxLength: 1,
         inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-        decoration: const InputDecoration(counterText: '', border: OutlineInputBorder()),
+        style: AppType.mono(size: 22, weight: FontWeight.w600),
+        decoration: InputDecoration(
+          counterText: '',
+          filled: true,
+          fillColor: AppColors.surfaceInput,
+          contentPadding: EdgeInsets.zero,
+          enabledBorder: OutlineInputBorder(
+            borderRadius: AppRadii.controlR,
+            borderSide: const BorderSide(color: AppColors.border),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: AppRadii.controlR,
+            borderSide: const BorderSide(color: AppColors.primary, width: 1.6),
+          ),
+        ),
         onChanged: (v) {
           if (v.isNotEmpty && index < 5) {
             _nodes[index + 1].requestFocus();

@@ -90,11 +90,11 @@
 
     {#if pending}
         <div class="flex flex-col items-center gap-2 rounded-md border border-border bg-surface-2 px-4 py-6">
-            <div class="font-mono text-3xl font-semibold tracking-widest text-text">
+            <div class="num text-3xl font-semibold tracking-widest text-text">
                 {formatCode(pending.code)}
             </div>
             <div class="text-xs text-text-dim">
-                Expira em {formatRemaining(remaining)}
+                Expira em <span class="num">{formatRemaining(remaining)}</span>
             </div>
         </div>
         <button type="button" onclick={generate} disabled={generating} class="btn-secondary">

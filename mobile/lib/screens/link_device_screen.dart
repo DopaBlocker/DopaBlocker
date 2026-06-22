@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/api_client.dart';
 import '../core/api_dtos.dart';
+import '../theme.dart';
+import '../widgets/ui_kit.dart';
 
 /// Vinculação de dispositivos: exibe código de 6 dígitos com TTL de 5 min.
 /// Fase 2: integrar com GET /devices/link-code e exibir countdown + QR code.
@@ -37,64 +39,76 @@ class _LinkDeviceScreenState extends ConsumerState<LinkDeviceScreen> {
     }
   }
 
+  void _copyCode() {
+    final code = _linkCode;
+    if (code == null) return;
+    Clipboard.setData(ClipboardData(text: code.code));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Código copiado!')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Vincular dispositivo')),
       body: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(AppSpacing.x6),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const SizedBox(height: 16),
-            const Text(
+            const SizedBox(height: AppSpacing.x4),
+            Text(
               'Compartilhe o código abaixo com o dispositivo do filho.',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 16),
+              style: AppType.body.copyWith(color: AppColors.textSecondary),
             ),
-            const SizedBox(height: 32),
+            const SizedBox(height: AppSpacing.x8),
             if (_loading)
-              const Center(child: CircularProgressIndicator())
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: AppSpacing.x8),
+                child: Center(
+                  child: CircularProgressIndicator(color: AppColors.primary),
+                ),
+              )
             else if (_error != null)
-              Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.red))
+              Text(
+                _error!,
+                textAlign: TextAlign.center,
+                style: AppType.body.copyWith(color: AppColors.danger),
+              )
             else if (_linkCode != null) ...[
-              GestureDetector(
-                onTap: () {
-                  Clipboard.setData(ClipboardData(text: _linkCode!.code));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Código copiado!')),
-                  );
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 20),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: Colors.indigo, width: 2),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    _linkCode!.code,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 40,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 12,
-                      color: Colors.indigo,
-                    ),
+              AppCard(
+                onTap: _copyCode,
+                highlight: true,
+                padding: const EdgeInsets.symmetric(
+                  vertical: AppSpacing.x6,
+                  horizontal: AppSpacing.x4,
+                ),
+                child: Text(
+                  _linkCode!.code,
+                  textAlign: TextAlign.center,
+                  style: AppType.mono(
+                    size: 40,
+                    weight: FontWeight.w700,
+                    color: AppColors.primary,
+                    letterSpacing: 12,
                   ),
                 ),
               ),
-              const SizedBox(height: 12),
-              const Text(
+              const SizedBox(height: AppSpacing.x3),
+              Text(
                 'Toque para copiar • Válido por 5 minutos',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.black54, fontSize: 12),
+                style: AppType.caption,
               ),
             ],
-            const SizedBox(height: 32),
-            OutlinedButton.icon(
+            const SizedBox(height: AppSpacing.x8),
+            AppButton(
+              label: 'Gerar novo código',
+              variant: AppButtonVariant.secondary,
+              icon: Icons.refresh,
               onPressed: _loading ? null : _generate,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Gerar novo código'),
             ),
           ],
         ),

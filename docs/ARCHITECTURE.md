@@ -17,7 +17,7 @@ Monorepo com 4 sub-projetos:
 | `shared/` | Crate Rust (modelos, bloom filter, domain matcher, regra parental) | Funcional, testado |
 | `backend/` | API REST Rust/Axum + SQLCipher | Funcional |
 | `desktop/` | Tauri 2 (Rust) + SvelteKit + Tailwind v4 | Funcional |
-| `mobile/` | Flutter + Kotlin | Parcial: **sites por DNS funcionam**; apps e filtro adulto pendentes |
+| `mobile/` | Flutter + Kotlin | Funcional: **sites (DNS)**, **apps** (overlay + seletor visual) e **conteúdo adulto** (Cloudflare for Families); pendente: cache SQLCipher Dart |
 
 `shared`, `backend` e `desktop/src-tauri` formam **um único workspace Cargo**.
 
@@ -46,6 +46,17 @@ A tela inicial oferece **Pessoal**, **Pais** e **Filhos**, mas o banco só tem d
 No fluxo Filhos não há cadastro: o usuário digita um **código de 6 dígitos** gerado pelo pai; o
 backend cria um `Device` sob o `user_id` do pai com `is_child=true` e emite um Device Token.
 
+O `mode` (`personal`/`parental`) **pode ser trocado depois** nas Configurações via `PUT /auth/me`,
+**sem recriar a conta** (ver [API.md](API.md)). A troca não mexe em devices/blocklist/vínculos — só
+muda como a regra "pai imune" é computada no próximo sync.
+
+**Criação de conta resiliente à identidade.** A conta vive em dois sistemas não transacionais
+(Firebase = identidade; backend = registro). Por isso `POST /auth/register` é **idempotente** e faz
+**reclaim**: se já existe conta para o `firebase_uid`, retorna-a; se existe uma conta órfã com o
+mesmo **email** (presa a um UID antigo), **reassocia-a** ao UID atual (provando posse do email pelo
+mesmo mecanismo do cadastro). Isso elimina o antigo beco sem saída em que o `email UNIQUE` prendia o
+recadastro. Detalhes em [API.md](API.md).
+
 ## Autenticação dual
 
 O middleware ([backend/src/middleware.rs](../backend/src/middleware.rs)) inspeciona o prefixo do
@@ -71,6 +82,10 @@ Fases: `booting` → (`child_session` | `signed_out` | `authenticating`); `authe
 `signed_out`); `pending_local_registration` → `authenticated`; `backend_unavailable` →
 `authenticating` (retry); `authenticated`/`child_session` → `signed_out` (logout/revogação).
 
+`pending_local_registration` é **transitório** (Firebase ok, falta concluir/recuperar o registro
+local): com o `register` idempotente + reclaim no backend, concluir o cadastro **cria ou recupera** a
+conta — não é mais um beco sem saída. A UI mostra só "finalizar cadastro / tentar de novo".
+
 Invariantes: `authenticated` ⇒ tem user+firebase e não tem child; `child_session` ⇒ tem child e
 **nunca** convive com Firebase. O header `Authorization` é determinado exclusivamente pela fase
 (via um `AuthProvider`: firebase / child / anônimo).
@@ -89,7 +104,8 @@ conexão) em toda parte:
 
 - **Backend** (fonte de verdade) — `rusqlite` + `bundled-sqlcipher`. Migrations:
   `001_initial` (users, devices, blocked_items, parental_links, adult_filter_settings),
-  `002_parental_fixes` (device_tokens + índices), `003_email_verification` (email_verifications).
+  `002_parental_fixes` (device_tokens + índices), `003_email_verification` (email_verifications),
+  `004_device_events` (eventos de adulteração reportados pelos filhos — C2.1/C2.2).
   `UNIQUE(user_id, item_type, value)` garante idempotência da blocklist.
 - **Desktop** (cache local) — migrations próprias: `001_local_cache` (blocked_items_cache,
   blocking_state) e `002_child_session`. A chave do SQLCipher é gerada no primeiro boot e guardada
@@ -99,11 +115,20 @@ conexão) em toda parte:
 
 ## Sincronização
 
-Backend como intermediário via REST; cache local em cada device. O desktop sincroniza em
-load/mutação de telas; o device do filho faz polling de `GET /blocklist` (a tela `/child-blocked`
-é uma **rota de UI**, não um endpoint — ela chama `GET /blocklist` periodicamente para detectar
-revogação via 401). **Não há** listeners realtime/Firestore. Polling periódico completo da blocklist
-ainda é parcial (ver [DECISOES_E_ROADMAP.md](DECISOES_E_ROADMAP.md)).
+Backend como intermediário via REST; cache local em cada device. Além do fetch em
+load/mutação de telas, **todas as sessões** mantêm o cache/engine em dia por **polling periódico**
+de `GET /blocklist` (~30–45s): o **device-filho** (recebe edições do pai) e o **modo pessoal/pai**
+(recebe mudanças feitas em outro device da mesma conta). É isso que faz, p.ex., um site bloqueado
+no celular pessoal aparecer no PC pessoal sem reiniciar o app. O poll detecta revogação (401 →
+logout **apenas no filho**) **e aplica** a blocklist atualizada ao cache/engine local — no desktop
+via `blockingStore.startAutoSync`/`tauri-bridge.saveBlocklist` (ligado no `+layout.svelte`; o filho
+tem o poll próprio em `/child-blocked`), no mobile via `_startPollIfNeeded`/`_syncNative`. Para
+baratear o poll, `GET /blocklist` suporta **ETag/`If-None-Match`** → `304 Not Modified` quando
+nada mudou. **Não há** listeners realtime/Firestore.
+
+> **Nota:** o **desktop não bloqueia apps** (o engine só carrega domínios); itens `app` existem na
+> blocklist mas só são aplicados no mobile. Logo, na sync Mobile→PC do modo pessoal só **sites**
+> se propagam de fato.
 
 ## Engine de bloqueio — Desktop (Windows)
 
@@ -151,15 +176,32 @@ HTTPS `:443` → (5) **DNS proxy `:53`**. Stop é na ordem inversa.
   (`dopablocker_prefs`); `startVpn()` as recarrega no boot/restart; `onRevoke()` limpa o estado.
   Cobertura: testes JVM (matcher + parser) e instrumentados no emulador (persistência + E2E de
   bloqueio).
-- **Bloqueio de apps — NÃO implementado.** O caminho de dados está rompido: o provider só envia
-  itens `domain` ao nativo; não há método de canal para enviar a lista de apps; e
+- **Bloqueio de apps — IMPLEMENTADO (C3).** O caminho de dados foi fechado: `_syncNative` envia
+  os itens `app` → método de canal `updateBlockedApps` →
   [AppBlockerService.kt](../mobile/android/app/src/main/kotlin/com/dopablocker/dopablocker_mobile/accessibility/AppBlockerService.kt)
-  nunca recebe a lista (`blockedPackages` fica sempre vazio). Mesmo a detecção, na prática, não
-  dispara.
-- **Filtro de conteúdo adulto — NÃO existe no mobile.** Há apenas o toggle de UI que chama
-  `PUT /blocklist/adult-filter`; não há filtragem no dispositivo.
+  (persiste em `SharedPreferences`, recarrega em `onServiceConnected`). Ao abrir um app bloqueado,
+  o serviço lança a **`BlockOverlayActivity`** (overlay full-screen — técnica Cold Turkey/AppBlock),
+  em vez do antigo "trazer pra frente" (contornável). O **seletor visual de apps** na UI Flutter
+  (`AppPickerSheet`) lista os apps instalados via `InstalledAppsProvider` (canal `getInstalledApps`,
+  `<queries>` MAIN/LAUNCHER no Manifest), com fallback de digitação manual do package name.
+- **Filtro de conteúdo adulto — IMPLEMENTADO via resolver filtrado (C4).** Com o toggle ligado, o
+  [DnsForwarder.kt](../mobile/android/app/src/main/kotlin/com/dopablocker/dopablocker_mobile/vpn/DnsForwarder.kt)
+  troca o upstream por **Cloudflare for Families** (`1.1.1.3`/`1.0.0.3`, malware + adulto), sem
+  manter ~100k domínios no device. A flag é persistida e aplicada no boot/restart.
+- **Detector de adulteração (C2.1/C2.2).** Quando o filho desliga a VPN (`onRevoke`) ou abre as
+  Configs de VPN/DNS (heurística em `SettingsTamperDetector`), o `TamperReporter` faz
+  `POST /devices/tamper` ao backend e o pai vê no painel de **Alertas**. Sem root é dissuasão
+  observável, não cofre (ver [DECISOES_E_ROADMAP.md](DECISOES_E_ROADMAP.md)).
 - **Boot** — [BootReceiver.kt](../mobile/android/app/src/main/kotlin/com/dopablocker/dopablocker_mobile/receivers/BootReceiver.kt)
   relê a flag persistida e religa a VPN.
+- **Ativação obrigatória no filho.** A tela do filho
+  ([child_blocked_screen.dart](../mobile/lib/screens/child_blocked_screen.dart)) é um **muro de
+  configuração**: enquanto faltar consentimento de VPN, acessibilidade ou overlay (rastreados em
+  [permissions_provider.dart](../mobile/lib/providers/permissions_provider.dart), com o passo de VPN
+  via `isVpnPrepared`), ela guia o filho passo a passo e **não** mostra "proteção ativa" enganosa.
+  Concedidas as permissões, o engine **sobe sozinho** (`ensureEngineRunning`: VPN + sync da lista do
+  pai) e reaplica no `resumed`. Sem isto, o dispositivo do filho exibia "bloqueio ativo" mas nunca
+  iniciava a VPN — agora o bloqueio definido pelo pai realmente vale.
 
 ## Regra do "pai imune"
 

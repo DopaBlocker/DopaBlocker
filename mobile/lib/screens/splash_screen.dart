@@ -1,19 +1,35 @@
 import 'package:flutter/material.dart';
 
+import '../theme.dart';
+import '../widgets/ui_kit.dart';
+
 class SplashScreen extends StatelessWidget {
   const SplashScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('DopaBlocker', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-            SizedBox(height: 24),
-            CircularProgressIndicator(),
-          ],
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const AppBrandMark(size: 72),
+              const SizedBox(height: AppSpacing.x6),
+              Text('DopaBlocker', style: AppType.h1),
+              const SizedBox(height: AppSpacing.x2),
+              Text('Recuperando seu foco…', style: AppType.bodySm),
+              const SizedBox(height: AppSpacing.x10),
+              const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.4,
+                  color: AppColors.primary,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

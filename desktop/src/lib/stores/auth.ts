@@ -457,6 +457,10 @@ function createAuthStore() {
                     );
                     return user;
                 } catch (loginErr) {
+                    // Com o register idempotente + reclaim no backend, o 409 só
+                    // sobra em corrida concorrente rara (o email é reassociado a
+                    // esta conta, não vira mais beco sem saída). Propaga o erro
+                    // real para o retry da UI.
                     resolvedError = loginErr;
                 }
             }
@@ -484,6 +488,22 @@ function createAuthStore() {
             });
             throw asError(resolvedError, message);
         }
+    }
+
+    /// Troca o modo da conta (personal↔parental) sem recriá-la. Só faz sentido
+    /// em sessão autenticada (Firebase); atualiza o `user` em memória no sucesso
+    /// para a UI refletir na hora. O efeito no engine vem no próximo sync.
+    async function updateMode(mode: BlockMode) {
+        const user = await api.updateMode(mode);
+        if (snapshot.phase === 'authenticated') {
+            commit({
+                phase: 'authenticated',
+                user,
+                firebase_user: identityFromUser(user),
+                error: null,
+            });
+        }
+        return user;
     }
 
     async function retryBackendSync() {
@@ -607,6 +627,7 @@ function createAuthStore() {
         register,
         completeLocalRegistration,
         confirmChildCode,
+        updateMode,
         retryBackendSync,
         logout,
         clearError,

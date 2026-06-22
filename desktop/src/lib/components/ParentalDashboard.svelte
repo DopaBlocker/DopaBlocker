@@ -10,6 +10,8 @@
     import { api, ApiError } from '$lib/services/api';
     import { toast } from '$lib/stores/toast';
     import type { Device } from '$lib/types';
+    import Skeleton from '$lib/components/ui/Skeleton.svelte';
+    import EmptyState from '$lib/components/ui/EmptyState.svelte';
 
     let devices: Device[] = $state([]);
     let loading = $state(true);
@@ -75,11 +77,26 @@
     </div>
 
     {#if loading}
-        <div class="card-padded text-center text-xs text-text-muted">Carregando…</div>
+        <div class="card flex flex-col gap-3 p-5">
+            <Skeleton class="h-10 w-full" />
+            <Skeleton class="h-10 w-full" />
+        </div>
     {:else if devices.length === 0}
-        <div class="card-padded text-center text-xs text-text-muted">
-            Nenhum filho vinculado ainda. Gere um código acima e peça para o
-            filho digitar no app dele.
+        <div class="card">
+            <EmptyState
+                title="Nenhum filho vinculado"
+                description="Gere um código acima e peça para o filho digitar no app dele."
+            >
+                {#snippet icon()}
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                        stroke-width="1.5" class="h-5 w-5">
+                        <circle cx="5" cy="5" r="2" />
+                        <circle cx="11" cy="5" r="2" />
+                        <path d="M2 13c0-1.66 1.79-3 3.5-3 .83 0 1.59.31 2.16.82M14 13c0-1.66-1.79-3-3.5-3-.83 0-1.59.31-2.16.82"
+                            stroke-linecap="round" />
+                    </svg>
+                {/snippet}
+            </EmptyState>
         </div>
     {:else}
         <ul class="card divide-y divide-border overflow-hidden">

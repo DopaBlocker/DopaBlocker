@@ -115,6 +115,92 @@ pub async fn get_user_by_firebase_uid(
     .map_err(|e| AppError::InternalServerError(e.to_string()))
 }
 
+/// Busca user pelo `email` (normalizado). Usado pelo reclaim em `/auth/register`
+/// para detectar uma conta presa a um `firebase_uid` antigo/diferente (cenário
+/// de conta órfã). Retorna `Ok(None)` quando não existe — o caller decide o que
+/// fazer (criar nova vs. reassociar).
+pub async fn get_user_by_email(db: &Connection, email: String) -> Result<Option<User>, AppError> {
+    // Normaliza com as mesmas regras da gravação (trim+lowercase) para casar
+    // com o que está persistido — senão `User@x.com` não acharia `user@x.com`.
+    let normalized_email = normalize_email(&email)?;
+    db.call(move |c| {
+        let r = c
+            .query_row(
+                "SELECT id, firebase_uid, email, display_name, mode, created_at
+                 FROM users WHERE email = ?1",
+                params![normalized_email],
+                |row| {
+                    Ok(User {
+                        id: row.get(0)?,
+                        firebase_uid: row.get(1)?,
+                        email: row.get(2)?,
+                        display_name: row.get(3)?,
+                        mode: parse_block_mode(&row.get::<_, String>(4)?),
+                        created_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(r)
+    })
+    .await
+    .map_err(|e| AppError::InternalServerError(e.to_string()))
+}
+
+/// Reassocia (reclaim/rebind) a conta de um `email` a um novo `firebase_uid`.
+/// Usado pelo reclaim de `/auth/register` no caminho de provider verificado
+/// (Google), onde a posse do email já está provada por `email_verified` — sem
+/// código. Preserva `mode`, `id` e `created_at`; troca só o `firebase_uid`.
+/// O caminho com código (provider `password`) é o
+/// `auth_service::reclaim_user_with_email_verification`.
+pub async fn rebind_firebase_uid(
+    db: &Connection,
+    email: String,
+    new_firebase_uid: String,
+) -> Result<User, AppError> {
+    let normalized_email = normalize_email(&email)?;
+    let email_for_lookup = normalized_email.clone();
+    db.call(move |c| {
+        c.execute(
+            "UPDATE users SET firebase_uid = ?1 WHERE email = ?2",
+            params![new_firebase_uid, normalized_email],
+        )?;
+        Ok(())
+    })
+    .await
+    // Se o novo `firebase_uid` colidir com outra linha (UNIQUE), vira 409. Na
+    // prática o caller já confirmou que o uid não existe, então isso só rola
+    // em corrida concorrente.
+    .map_err(|e| AppError::Conflict(format!("Falha ao reassociar conta: {e}")))?;
+
+    get_user_by_email(db, email_for_lookup)
+        .await?
+        .ok_or_else(|| AppError::InternalServerError("Conta reassociada nao encontrada".into()))
+}
+
+/// Troca o `mode` da conta (personal↔parental). Usado por `PUT /auth/me`. NÃO
+/// mexe em devices/blocklist/vínculos — a regra "pai imune" é recomputada por
+/// `mode` no momento do sync, então a troca passa a valer no próximo poll.
+pub async fn update_mode(
+    db: &Connection,
+    user_id: String,
+    mode: BlockMode,
+) -> Result<User, AppError> {
+    let mode_str = block_mode_to_sql(&mode).to_string();
+    let user_id_for_lookup = user_id.clone();
+    db.call(move |c| {
+        c.execute(
+            "UPDATE users SET mode = ?1 WHERE id = ?2",
+            params![mode_str, user_id],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::InternalServerError(e.to_string()))?;
+
+    get_user_by_id(db, user_id_for_lookup).await
+}
+
 /// Apaga a conta do usuário e tudo que depende dela. Usado por `DELETE /auth/me`.
 ///
 /// As FKs `ON DELETE CASCADE` cuidam de `devices`, `blocked_items`,

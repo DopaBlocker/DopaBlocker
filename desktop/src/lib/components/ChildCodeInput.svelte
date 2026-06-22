@@ -94,7 +94,7 @@
                 oninput={(e) => handleInput(i, e)}
                 onkeydown={(e) => handleKeydown(i, e)}
                 aria-label={`Dígito ${i + 1} do código`}
-                class="h-12 w-10 rounded-md border border-border bg-surface text-center text-lg font-semibold text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-50"
+                class="num h-12 w-10 rounded-md border border-border bg-surface text-center text-lg font-semibold text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-50"
             />
         {/each}
     </div>

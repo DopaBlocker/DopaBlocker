@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
     import type { BlockedItem } from '$lib/types';
+    import EmptyState from '$lib/components/ui/EmptyState.svelte';
 
     interface Props {
         items: BlockedItem[];
@@ -44,32 +45,27 @@
 </script>
 
 {#if items.length === 0}
-    <div
-        class="card flex flex-col items-center justify-center gap-3 px-6 py-16 text-center"
-    >
-        <div
-            class="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-surface-2"
+    <div class="card">
+        <EmptyState
+            title="Nenhum bloqueio ainda"
+            description="Comece pelos sites que mais te distraem."
         >
-            <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                class="h-6 w-6 text-text-muted"
-            >
-                <path
-                    d="M12 3l8 4v5a9 9 0 01-8 9 9 9 0 01-8-9V7l8-4z"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                />
-            </svg>
-        </div>
-        <div>
-            <h3 class="text-sm font-medium text-text">Nenhum bloqueio ainda</h3>
-            <p class="mt-1 text-xs text-text-muted">
-                Comece pelos sites que mais te distraem.
-            </p>
-        </div>
+            {#snippet icon()}
+                <svg
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    class="h-5 w-5"
+                >
+                    <path
+                        d="M8 2l5 2v4a6 6 0 01-5 6 6 6 0 01-5-6V4l5-2z"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    />
+                </svg>
+            {/snippet}
+        </EmptyState>
     </div>
 {:else}
     <div class="card overflow-hidden">

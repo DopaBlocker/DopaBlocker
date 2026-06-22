@@ -39,6 +39,14 @@ class FirebaseService {
   Future<String?> getIdToken({bool forceRefresh = false}) =>
       _auth.currentUser?.getIdToken(forceRefresh) ?? Future.value(null);
 
+  /// Exclui o usuário atual do Firebase e limpa o login Google. Lança
+  /// `FirebaseAuthException(code: 'requires-recent-login')` quando a sessão é
+  /// antiga — o chamador deve então pedir relogin antes de tentar de novo.
+  Future<void> deleteAccount() async {
+    await _auth.currentUser?.delete();
+    await _googleSignIn.signOut();
+  }
+
   /// Necessário antes de deletar conta (Firebase exige reautenticação recente).
   bool get requiresRecentLogin {
     final user = _auth.currentUser;

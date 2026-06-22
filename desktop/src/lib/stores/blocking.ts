@@ -8,9 +8,13 @@
 
 import { get, writable } from 'svelte/store';
 import type { BlockedItem, BlockedType, BlockingStatus } from '../types';
-import { api } from '../services/api';
+import { api, resetBlocklistEtag } from '../services/api';
 import * as bridge from '../services/tauri-bridge';
 import { authStore } from './auth';
+
+/// Intervalo do auto-sync da blocklist (modo pessoal/pai). ~30s, alinhado ao
+/// poll do device-filho. Barato graças ao ETag/304 do backend.
+const AUTO_SYNC_INTERVAL_MS = 30_000;
 
 /// Deriva o `ParentalContext` a ser enviado aos comandos Tauri a partir do
 /// estado atual do auth. O Rust usa isso para aplicar a regra do pai imune
@@ -49,6 +53,10 @@ function createBlockingStore() {
         error: null,
     });
 
+    // Timer do auto-sync. Mantido fora do state porque é detalhe de runtime,
+    // não estado reativo da UI.
+    let autoSyncTimer: number | null = null;
+
     async function load(userId: string) {
         update((s) => ({ ...s, loading: true, error: null }));
         try {
@@ -76,6 +84,44 @@ function createBlockingStore() {
                 loading: false,
                 error: err instanceof Error ? err.message : String(err),
             }));
+        }
+    }
+
+    /// Sincronização silenciosa (sem flag de loading) usada pelo auto-sync.
+    /// Usa o GET condicional: se o backend responder 304 (nada mudou), não
+    /// re-popula o engine nem mexe no state. Em mudança, espelha no cache local
+    /// (o que reaplica as regras no engine) e atualiza os itens da UI.
+    async function refresh(userId: string) {
+        const items = await api.listBlocklistIfChanged();
+        if (items === null) return; // 304: nada mudou.
+        await bridge.saveBlocklist(userId, items, parentalContext()).catch((e) => {
+            console.warn('Falha ao espelhar blocklist no cache local:', e);
+        });
+        update((s) => ({
+            ...s,
+            items,
+            status: { ...s.status, item_count: items.length },
+        }));
+    }
+
+    /// Liga o poll periódico que mantém o cache local (de onde o engine lê) em
+    /// dia com o backend — necessário para o modo pessoal/pai, onde a mudança
+    /// pode vir de OUTRO device. O device-filho tem o próprio poll em
+    /// /child-blocked; aqui é só para sessões Firebase. Idempotente.
+    function startAutoSync(userId: string) {
+        stopAutoSync();
+        resetBlocklistEtag(); // ETag é por-usuário; zera ao (re)iniciar.
+        autoSyncTimer = window.setInterval(() => {
+            void refresh(userId).catch(() => {
+                /* rede/5xx/401: ignora e tenta no próximo tick */
+            });
+        }, AUTO_SYNC_INTERVAL_MS);
+    }
+
+    function stopAutoSync() {
+        if (autoSyncTimer !== null) {
+            window.clearInterval(autoSyncTimer);
+            autoSyncTimer = null;
         }
     }
 
@@ -157,10 +203,22 @@ function createBlockingStore() {
     }
 
     function reset() {
+        stopAutoSync();
         set({ items: [], status: initialStatus, loading: false, error: null });
     }
 
-    return { subscribe, load, addItem, removeItem, toggleEngine, toggleAdultFilter, reset };
+    return {
+        subscribe,
+        load,
+        refresh,
+        startAutoSync,
+        stopAutoSync,
+        addItem,
+        removeItem,
+        toggleEngine,
+        toggleAdultFilter,
+        reset,
+    };
 }
 
 export const blockingStore = createBlockingStore();

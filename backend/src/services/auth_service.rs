@@ -394,6 +394,107 @@ pub async fn create_user_with_email_verification(
     .map_err(map_register_error)
 }
 
+/// Reassocia (reclaim) uma conta existente — identificada pelo `email` já
+/// verificado — a um novo `firebase_uid`. Usado pelo `/auth/register` quando o
+/// vínculo `firebase_uid`→linha quebrou (ex.: conta Firebase recriada/apagada)
+/// e o `email UNIQUE` prenderia o recadastro num beco sem saída.
+///
+/// Consome o MESMO `email_verification_token` exigido no cadastro como prova de
+/// posse do email — não há vetor de roubo: o Firebase só emite token verificado
+/// para quem controla o email, e se o `firebase_uid` original ainda existisse o
+/// dono entraria por ele (login 200) sem cair aqui.
+///
+/// Preserva `mode`, `id` e `created_at` da conta original; troca apenas o
+/// `firebase_uid`. Espelha `create_user_with_email_verification`, mas faz UPDATE
+/// em vez de INSERT.
+pub async fn reclaim_user_with_email_verification(
+    db: &Connection,
+    config: &AppConfig,
+    new_firebase_uid: String,
+    email: String,
+    email_verification_token: String,
+) -> Result<User, AppError> {
+    let normalized_email = normalize_email(&email)?;
+    let token = email_verification_token.trim();
+    if token.is_empty() {
+        return Err(AppError::BadRequest(
+            "Verificacao de email ausente ou invalida".into(),
+        ));
+    }
+
+    let token_hash = email_token_hash(&config.email_code_secret, token);
+    let now = iso_now();
+    let email = normalized_email.clone();
+
+    db.call(move |c| {
+        let tx = c.transaction()?;
+
+        let verification: Option<(String, String)> = tx
+            .query_row(
+                "SELECT id, token_expires_at
+                 FROM email_verifications
+                 WHERE email = ?1
+                   AND token_hash = ?2
+                   AND status = 'verified'
+                   AND consumed_at IS NULL
+                 ORDER BY verified_at DESC LIMIT 1",
+                params![normalized_email, token_hash],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+
+        let (verification_id, token_expires_at) =
+            verification.ok_or_else(|| ServiceError::EmailTokenInvalid.into_sqlite())?;
+
+        if token_expires_at.as_str() < now.as_str() {
+            tx.execute(
+                "UPDATE email_verifications SET status = 'expired' WHERE id = ?1",
+                params![verification_id],
+            )?;
+            return Err(ServiceError::EmailTokenExpired.into_sqlite());
+        }
+
+        let updated = tx.execute(
+            "UPDATE users SET firebase_uid = ?1 WHERE email = ?2",
+            params![new_firebase_uid, email],
+        )?;
+        // A conta sumiu entre a checagem do caller e este UPDATE (corrida).
+        // Trata como token inválido para não consumir o token à toa.
+        if updated == 0 {
+            return Err(ServiceError::EmailTokenInvalid.into_sqlite());
+        }
+
+        tx.execute(
+            "UPDATE email_verifications
+             SET status = 'consumed', consumed_at = ?1
+             WHERE id = ?2",
+            params![now, verification_id],
+        )?;
+
+        let user = tx.query_row(
+            "SELECT id, firebase_uid, email, display_name, mode, created_at
+             FROM users WHERE email = ?1",
+            params![email],
+            |row| {
+                Ok(User {
+                    id: row.get(0)?,
+                    firebase_uid: row.get(1)?,
+                    email: row.get(2)?,
+                    display_name: row.get(3)?,
+                    mode: parse_block_mode(&row.get::<_, String>(4)?),
+                    created_at: row.get(5)?,
+                })
+            },
+        )?;
+
+        tx.commit()?;
+
+        Ok(user)
+    })
+    .await
+    .map_err(map_register_error)
+}
+
 async fn expire_email_verification(db: &Connection, id: String) {
     let _ = db
         .call(move |c| {
@@ -473,6 +574,7 @@ mod tests {
             email_code_secret: "test-secret".into(),
             email_delivery_mode,
             smtp: None,
+            cors_allowed_origins: vec!["http://localhost:5173".into()],
         }
     }
 

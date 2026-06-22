@@ -11,9 +11,11 @@
     import { page } from '$app/state';
     import { onMount } from 'svelte';
     import { AUTH_BOOTING_STATE, authStore, type AuthState } from '$lib/stores/auth';
+    import { blockingStore } from '$lib/stores/blocking';
     import OnboardingModal from '$lib/components/OnboardingModal.svelte';
     import ConfirmModal from '$lib/components/ui/ConfirmModal.svelte';
     import ToastContainer from '$lib/components/ui/Toast.svelte';
+    import BrandMark from '$lib/components/ui/BrandMark.svelte';
     import '../app.css';
 
     const PUBLIC_ROUTES = ['/welcome', '/login', '/onboarding/child'];
@@ -23,6 +25,10 @@
     let { children } = $props();
     let auth: AuthState = $state({ ...AUTH_BOOTING_STATE });
     let onboardingOpen = $state(false);
+
+    // User cujo auto-sync da blocklist está ativo. Só (re)inicia o poll quando
+    // o usuário muda, evitando reiniciar a cada emissão do auth store.
+    let autoSyncUserId: string | null = null;
 
     onMount(() => {
         authStore.init();
@@ -37,8 +43,21 @@
                     onboardingOpen = true;
                 }
             }
+
+            // Auto-sync da blocklist para sessões Firebase (pessoal/pai): mantém
+            // o cache local (de onde o engine lê) em dia com mudanças feitas em
+            // OUTRO device. O filho tem o próprio poll em /child-blocked.
+            const activeUserId = s.phase === 'authenticated' ? (s.user?.id ?? null) : null;
+            if (activeUserId !== autoSyncUserId) {
+                autoSyncUserId = activeUserId;
+                if (activeUserId) blockingStore.startAutoSync(activeUserId);
+                else blockingStore.stopAutoSync();
+            }
         });
-        return unsub;
+        return () => {
+            blockingStore.stopAutoSync();
+            unsub();
+        };
     });
 
     function completeOnboarding() {
@@ -103,12 +122,12 @@
 
     type NavIcon = 'dashboard' | 'shield' | 'settings' | 'parental';
     const navLinks = $derived<{ href: string; label: string; icon: NavIcon }[]>([
-        { href: '/', label: 'Dashboard', icon: 'dashboard' },
+        { href: '/', label: 'Início', icon: 'dashboard' },
         { href: '/blocking', label: 'Bloqueios', icon: 'shield' },
         ...(isParental
             ? [{ href: '/parental', label: 'Filhos', icon: 'parental' as const }]
             : []),
-        { href: '/settings', label: 'Configurações', icon: 'settings' },
+        { href: '/settings', label: 'Conta', icon: 'settings' },
     ]);
 
     function isActive(href: string, path: string) {
@@ -140,12 +159,7 @@
         >
             <!-- Logo mark + wordmark -->
             <div class="flex items-center gap-2.5 px-2 pb-6">
-                <div
-                    class="flex h-7 w-7 items-center justify-center rounded-md"
-                    style="background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%)"
-                >
-                    <div class="h-3 w-3 rounded-sm bg-white/90"></div>
-                </div>
+                <BrandMark size="xs" />
                 <div class="flex flex-col leading-tight">
                     <span class="text-[13px] font-semibold tracking-tight text-gradient">DopaBlocker</span>
                     <span class="text-[10px] uppercase tracking-widest text-text-dim">

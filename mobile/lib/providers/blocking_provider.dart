@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../channels/blocking_channel.dart';
@@ -50,8 +53,29 @@ class BlockingNotifier extends StateNotifier<BlockingState> {
   final ApiClient _api;
   final Ref _ref;
 
+  /// Timer do poll periódico da blocklist (B2). Ativo no filho (edições do pai)
+  /// e na conta pessoal/pai (mudanças feitas em outro device da mesma conta).
+  Timer? _pollTimer;
+
+  /// Intervalo do poll. ~45s é aceitável para sync entre devices e barato
+  /// graças ao ETag/304 do backend.
+  static const Duration _pollInterval = Duration(seconds: 45);
+
   BlockingNotifier(this._api, this._ref)
-      : super(BlockingState(isLoading: true, activeSince: _startOfToday()));
+      : super(BlockingState(isLoading: true, activeSince: _startOfToday())) {
+    // Recarrega e (re)inicia o poll quando a sessão muda (login, troca de conta,
+    // vínculo de filho). Sem isto, o provider só carregaria na criação e o
+    // device pessoal/pai nunca pegaria mudanças feitas em outro device.
+    _ref.listen<AuthState>(authProvider, (_, next) => _onAuthChanged(next));
+  }
+
+  void _onAuthChanged(AuthState next) {
+    if (next is AuthAuthenticated || next is AuthChildSession) {
+      load();
+    } else {
+      _pollTimer?.cancel();
+    }
+  }
 
   static DateTime _startOfToday() {
     final now = DateTime.now();
@@ -68,6 +92,43 @@ class BlockingNotifier extends StateNotifier<BlockingState> {
       state = state.copyWith(items: _demoItems(), isLoading: false);
     }
     _syncNative();
+    _startPollIfNeeded();
+  }
+
+  /// Liga o poll periódico para sessões que precisam receber mudanças vindas de
+  /// OUTRO device: filho vinculado (edições do pai) e conta pessoal/pai
+  /// (mudanças em outro device da mesma conta). Idempotente.
+  void _startPollIfNeeded() {
+    final auth = _ref.read(authProvider);
+    _pollTimer?.cancel();
+    if (auth is! AuthChildSession && auth is! AuthAuthenticated) return;
+    _pollTimer = Timer.periodic(_pollInterval, (_) => _pollBlocklist());
+  }
+
+  Future<void> _pollBlocklist() async {
+    try {
+      final updated = await _api.getBlocklistIfChanged();
+      if (updated != null) {
+        state = state.copyWith(items: updated);
+        _syncNative();
+      }
+    } on DioException catch (e) {
+      final err = e.error;
+      if (err is ApiException && err.statusCode == 401) {
+        // Só o filho desloga em 401 (Device Token revogado pelo pai → o layout
+        // redireciona). Para Firebase, o refresh do token é feito no
+        // interceptor do api_client; um 401 aqui não deve derrubar a sessão.
+        if (_ref.read(authProvider) is AuthChildSession) {
+          await _ref.read(authProvider.notifier).logout();
+        }
+      }
+    } catch (_) {/* rede/5xx: tenta de novo no próximo tick */}
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> addItem(String value, String itemType) async {
@@ -99,16 +160,10 @@ class BlockingNotifier extends StateNotifier<BlockingState> {
     _syncNative();
   }
 
-  void toggleItemActive(BlockedItem item) {
-    state = state.copyWith(items: [
-      for (final i in state.items)
-        if (i.id == item.id) i.copyWith(isActive: !i.isActive) else i,
-    ]);
-    _syncNative();
-  }
-
   Future<void> toggleAdultFilter(bool enabled) async {
     state = state.copyWith(isAdultFilterEnabled: enabled);
+    // Aplica no engine nativo (troca o resolver upstream — C4).
+    BlockingChannel.setAdultFilter(enabled).catchError((_) {});
     try {
       await _api.setAdultFilter(enabled);
     } catch (_) {/* sincroniza quando voltar online */}
@@ -129,22 +184,51 @@ class BlockingNotifier extends StateNotifier<BlockingState> {
     _syncNative();
   }
 
-  /// Repassa a blocklist de domínios ativos para o serviço nativo de VPN.
+  /// Garante que o engine do filho está rodando: sobe a VPN se ainda não estiver
+  /// ativa e empurra a blocklist para o nativo. Idempotente — chamado ao entrar
+  /// na sessão de filho e a cada retorno ao app (depois que as permissões são
+  /// concedidas). É o que faz o bloqueio definido pelo pai realmente valer no
+  /// dispositivo do filho (antes disto, a lista era empurrada mas a VPN nunca
+  /// subia sozinha).
+  Future<void> ensureEngineRunning() async {
+    try {
+      final active = await BlockingChannel.isVpnActive();
+      if (!active) {
+        await BlockingChannel.startVpn();
+      }
+    } catch (_) {/* nativo indisponível */}
+    _syncNative();
+  }
+
+  /// Repassa a blocklist de domínios e apps ativos para o serviço nativo, mais
+  /// o estado do filtro adulto.
   ///
-  /// Regra do pai imune: no device do pai em modo parental, envia lista vazia
+  /// Regra do pai imune: no device do pai em modo parental, envia listas vazias
   /// (o pai não bloqueia a si mesmo). Conta pessoal e device do filho aplicam a
   /// lista normalmente.
   void _syncNative() {
     if (!state.isBlockingActive) return;
     final auth = _ref.read(authProvider);
     final isParentDevice = auth is AuthAuthenticated && auth.user.isParental;
+
     final domains = isParentDevice
         ? const <String>[]
         : state.items
             .where((i) => i.isActive && i.itemType == 'domain')
             .map((i) => i.value)
             .toList();
+    final apps = isParentDevice
+        ? const <String>[]
+        : state.items
+            .where((i) => i.isActive && i.itemType == 'app')
+            .map((i) => i.value)
+            .toList();
+
     BlockingChannel.updateBlocklist(domains).catchError((_) {});
+    BlockingChannel.updateBlockedApps(apps).catchError((_) {});
+    // No device do pai (imune) o filtro adulto também não se aplica.
+    BlockingChannel.setAdultFilter(isParentDevice ? false : state.isAdultFilterEnabled)
+        .catchError((_) {});
   }
 
   List<BlockedItem> _demoItems() {

@@ -31,10 +31,10 @@ use axum::{
 use crate::errors::AppError;
 use crate::middleware::{AuthSource, AuthUser};
 use crate::models::{
-    ConfirmLinkRequest, ConfirmLinkResponse, Device, GenerateLinkCodeResponse,
-    RegisterDeviceRequest, SuccessResponse,
+    ConfirmLinkRequest, ConfirmLinkResponse, Device, DeviceEvent, GenerateLinkCodeResponse,
+    RegisterDeviceRequest, SuccessResponse, TamperReportRequest,
 };
-use crate::services::device_service;
+use crate::services::{device_event_service, device_service};
 use crate::AppState;
 
 /// Rotas que exigem JWT Firebase OU Device Token (GET apenas).
@@ -43,6 +43,7 @@ pub fn protected_router() -> Router<AppState> {
     Router::new()
         .route("/register", post(register_device))
         .route("/", get(list_devices))
+        .route("/events", get(list_events))
         .route("/link/generate", post(generate_link_code))
         .route("/{id}/revoke", post(revoke_device))
 }
@@ -51,7 +52,9 @@ pub fn protected_router() -> Router<AppState> {
 /// ABSOLUTO (não faz nest), porque `main.rs` faz `.merge()` deste router
 /// no Router raiz, e precisamos do path completo.
 pub fn public_router() -> Router<AppState> {
-    Router::new().route("/devices/link/confirm", post(confirm_link))
+    Router::new()
+        .route("/devices/link/confirm", post(confirm_link))
+        .route("/devices/tamper", post(report_tamper))
 }
 
 /// `POST /devices/register` — registra um device DO PAI (is_child=false,
@@ -126,4 +129,35 @@ async fn revoke_device(
     Ok(Json(SuccessResponse {
         message: "Dispositivo desvinculado".into(),
     }))
+}
+
+/// `POST /devices/tamper` — ROTA PÚBLICA. O device do filho reporta um evento
+/// de adulteração (VPN desligada, Configs de VPN/DNS abertas). Autentica-se
+/// pelo Device Token NO CORPO (ver `device_event_service::record_tamper`), e
+/// não pelo header — assim a regra read-only do middleware fica intocada.
+/// Token inválido/revogado → 401; `kind` desconhecido → 400.
+async fn report_tamper(
+    State(state): State<AppState>,
+    Json(payload): Json<TamperReportRequest>,
+) -> Result<Json<SuccessResponse>, AppError> {
+    device_event_service::record_tamper(&state.db, &payload.device_token, &payload.kind).await?;
+    Ok(Json(SuccessResponse {
+        message: "Evento registrado".into(),
+    }))
+}
+
+/// `GET /devices/events` — o pai lê os alertas de adulteração dos seus filhos
+/// (mais recentes primeiro). Apenas Firebase JWT: um Device Token (filho) não
+/// deve enxergar os próprios alertas, então rejeitamos com 403 mesmo sendo GET.
+async fn list_events(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<Vec<DeviceEvent>>, AppError> {
+    if auth.source != AuthSource::Firebase {
+        return Err(AppError::Forbidden(
+            "Apenas contas Firebase podem ver alertas de dispositivos".into(),
+        ));
+    }
+    let events = device_event_service::list_events(&state.db, auth.user_id).await?;
+    Ok(Json(events))
 }

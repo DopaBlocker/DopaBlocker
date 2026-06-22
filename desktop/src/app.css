@@ -1,39 +1,73 @@
 @import "tailwindcss";
 
 /* =============================================================================
-   Design tokens — paleta + tipografia + sombras.
-   Preto como base, azul um pouco escuro como primária, roxo um pouco escuro
-   como secundária. Neutros com leve viés azulado pra evitar cinza "morto".
+   Fontes embutidas (app offline no WebView) — Inter (UI) + JetBrains Mono
+   (números/dados tabulares). Arquivos em static/fonts/, servidos na raiz.
+   ========================================================================== */
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/inter-400.woff2") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/inter-500.woff2") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 600; font-display: swap; src: url("/fonts/inter-600.woff2") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 700; font-display: swap; src: url("/fonts/inter-700.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/jetbrains-mono-400.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/jetbrains-mono-500.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 600; font-display: swap; src: url("/fonts/jetbrains-mono-600.woff2") format("woff2"); }
+
+/* =============================================================================
+   Design tokens — espelho da spec (docs/superpowers/specs/...-design.md §2).
+   Dark-only. Neutros com leve viés azulado. Gradiente azul→roxo é a assinatura
+   de marca; roxo sólido (#7C5CFF) é a primária funcional.
    ========================================================================== */
 @theme {
     --color-bg: #08080b;
-    --color-surface: #111114;
-    --color-surface-2: #17171c;
-    --color-surface-hover: #1c1c22;
-    --color-border: #23232b;
-    --color-border-strong: #2e2e38;
+    --color-surface: #121218;
+    --color-surface-2: #1a1a22;
+    --color-surface-hover: #22222c;
+    --color-border: #26262f;
+    --color-border-strong: #33333f;
+    --color-hairline: rgba(255, 255, 255, 0.05);
+    --color-scrim: rgba(0, 0, 0, 0.6);
 
-    --color-text: #ededf0;
-    --color-text-muted: #8d8d97;
-    --color-text-dim: #56565e;
+    --color-text: #ececf1;
+    --color-text-muted: #8c8c97;
+    --color-text-dim: #5c5c66;
 
-    --color-primary: #1e40af;
-    --color-primary-hover: #2a52c8;
-    --color-primary-subtle: rgba(30, 64, 175, 0.12);
+    --color-primary: #7c5cff;
+    --color-primary-hover: #8e78ff;
+    --color-primary-pressed: #6a4fe6;
+    --color-primary-subtle: rgba(124, 92, 255, 0.14);
 
-    --color-secondary: #b026ff;
-    --color-secondary-hover: #c452ff;
-    --color-secondary-subtle: rgba(176, 38, 255, 0.14);
+    /* Mantido p/ não quebrar badge-secondary/text-gradient; é o fim do gradiente. */
+    --color-secondary: #8b5cff;
+    --color-secondary-subtle: rgba(139, 92, 255, 0.14);
 
-    --color-success: #10b981;
-    --color-success-subtle: rgba(16, 185, 129, 0.12);
-    --color-warning: #d97706;
-    --color-danger: #dc2626;
-    --color-danger-subtle: rgba(220, 38, 38, 0.12);
+    --color-success: #2fd477;
+    --color-success-subtle: rgba(47, 212, 119, 0.14);
+    --color-warning: #e0a23b;
+    --color-warning-subtle: rgba(224, 162, 59, 0.14);
+    --color-danger: #f2545b;
+    --color-danger-subtle: rgba(242, 84, 91, 0.14);
+
+    /* Assinatura de marca (gradiente). */
+    --brand-from: #3d6bff;
+    --brand-to: #8b5cff;
+
+    /* Raios (sobrescrevem o default do Tailwind → afeta rounded-sm/md/lg/xl). */
+    --radius-sm: 0.5rem;
+    --radius-md: 0.625rem;
+    --radius-lg: 1rem;
+    --radius-xl: 1.25rem;
 
     --font-sans:
         "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
         "Helvetica Neue", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+    /* Movimento. Expo-out p/ entrada/realce "premium" (ui-ux-pro-max: Modern Dark). */
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in: cubic-bezier(0.4, 0, 1, 1);
+    --dur-micro: 140ms;
+    --dur-enter: 220ms;
+    --dur-exit: 150ms;
 
     --shadow-soft: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
     --shadow-card: 0 2px 8px -2px rgba(0, 0, 0, 0.5);
@@ -101,18 +135,21 @@ select {
     /* Buttons ----------------------------------------------------------------- */
     .btn-primary {
         @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-all text-white disabled:cursor-not-allowed disabled:opacity-50;
-        background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
-        background-size: 200% auto;
+        background: linear-gradient(135deg, var(--brand-from), var(--brand-to));
         box-shadow: var(--shadow-soft);
+        transition-duration: var(--dur-micro);
     }
     .btn-primary:hover:not(:disabled) {
-        background-position: right center;
-        transform: translateY(-1px);
+        filter: brightness(1.08);
         box-shadow: var(--shadow-card);
+    }
+    .btn-primary:active:not(:disabled) {
+        transform: scale(0.97);
     }
     .btn-secondary {
         @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-colors bg-surface-2 text-text hover:bg-surface-hover border border-border disabled:cursor-not-allowed disabled:opacity-50;
     }
+    .btn-secondary:active:not(:disabled) { transform: scale(0.98); }
     .btn-ghost {
         @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-colors text-text-muted hover:text-text hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50;
     }
@@ -127,18 +164,32 @@ select {
     .card {
         @apply rounded-lg border border-border bg-surface;
         box-shadow: var(--shadow-card);
+        border-top-color: var(--color-hairline);
     }
     .card-padded {
         @apply rounded-lg border border-border bg-surface p-5;
         box-shadow: var(--shadow-card);
+        border-top-color: var(--color-hairline);
+    }
+    /* Card de destaque — anel gradiente sutil (KPI/conquista). */
+    .card-highlight {
+        @apply rounded-lg bg-surface p-5;
+        box-shadow: var(--shadow-card);
+        border: 1px solid transparent;
+        background:
+            linear-gradient(var(--color-surface), var(--color-surface)) padding-box,
+            linear-gradient(135deg, var(--brand-from), var(--brand-to)) border-box;
     }
 
     /* Inputs ------------------------------------------------------------------ */
     .field-label {
-        @apply text-[11px] font-medium uppercase tracking-wider text-text-muted;
+        @apply text-[11px] font-semibold uppercase tracking-wider text-text-muted;
     }
     .input {
-        @apply w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text placeholder:text-text-dim focus:border-primary focus:outline-none transition-colors;
+        @apply w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm text-text placeholder:text-text-dim focus:border-primary focus:outline-none transition-colors;
+    }
+    .input:focus {
+        box-shadow: 0 0 0 3px var(--color-primary-subtle);
     }
 
     /* Badges ------------------------------------------------------------------ */
@@ -157,16 +208,49 @@ select {
         @apply inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap border-success/40 text-success;
         background: var(--color-success-subtle);
     }
+    .badge-warning {
+        @apply inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap border-warning/40 text-warning;
+        background: var(--color-warning-subtle);
+    }
     .badge-danger {
         @apply inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap border-danger/40 text-danger;
         background: var(--color-danger-subtle);
     }
-    
-    /* Text -------------------------------------------------------------------- */
+
+    /* Text / dados ------------------------------------------------------------ */
     .text-gradient {
-        background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+        background: linear-gradient(135deg, var(--brand-from), var(--brand-to));
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
     }
+    /* Números tabulares (KPIs, contadores, código). */
+    .num {
+        font-family: var(--font-mono);
+        font-feature-settings: "tnum" 1;
+    }
+
+    /* Loading ----------------------------------------------------------------- */
+    .skeleton {
+        @apply rounded-md bg-surface-2;
+        position: relative;
+        overflow: hidden;
+    }
+    .skeleton::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        transform: translateX(-100%);
+        background: linear-gradient(90deg, transparent, var(--color-surface-hover), transparent);
+        animation: skeleton-shimmer 1.4s ease-in-out infinite;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .skeleton::after { animation: none; }
+        .btn-primary:active:not(:disabled),
+        .btn-secondary:active:not(:disabled) { transform: none; }
+    }
+}
+
+@keyframes skeleton-shimmer {
+    100% { transform: translateX(100%); }
 }

@@ -1,7 +1,7 @@
 use axum::{
     extract::State,
     http::HeaderMap,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Extension, Json, Router,
 };
 
@@ -11,7 +11,7 @@ use crate::middleware::{
 };
 use crate::models::{
     EmailCodeStartRequest, EmailCodeStartResponse, EmailCodeVerifyRequest, EmailCodeVerifyResponse,
-    RegisterRequest, SuccessResponse, User,
+    RegisterRequest, SuccessResponse, UpdateModeRequest, User,
 };
 use crate::services::{auth_service, user_service};
 use crate::AppState;
@@ -27,6 +27,7 @@ pub fn public_router() -> Router<AppState> {
 pub fn protected_router() -> Router<AppState> {
     Router::new()
         .route("/auth/me", get(me))
+        .route("/auth/me", put(update_me))
         .route("/auth/me", delete(delete_me))
 }
 
@@ -91,6 +92,20 @@ fn provider_is_already_verified(claims: &FirebaseClaims) -> bool {
     !requires_email_verification_code(claims) && claims.email_verified.unwrap_or(false)
 }
 
+/// Extrai o `email_verification_token` do body (provider `password`), exigindo
+/// que esteja presente e não vazio. É a prova de posse do email usada tanto na
+/// criação quanto no reclaim de conta.
+fn require_email_verification_token(payload: &RegisterRequest) -> Result<String, AppError> {
+    payload
+        .email_verification_token
+        .clone()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            AppError::BadRequest("Verifique seu email antes de concluir o cadastro".into())
+        })
+}
+
 async fn start_email_code(
     State(state): State<AppState>,
     Json(payload): Json<EmailCodeStartRequest>,
@@ -110,6 +125,19 @@ async fn verify_email_code(
     Ok(Json(response))
 }
 
+/// `POST /auth/register` — **idempotente e resiliente à identidade**. O nome é
+/// histórico; na prática "garante que a conta deste login exista". Três casos:
+///
+///   1. Já existe conta para este `firebase_uid` → retorna-a (não é mais 409).
+///      Torna o cadastro repetível sem erro e simplifica o retry do frontend.
+///   2. Não existe para o uid, mas existe uma conta com este **email** (presa a
+///      um `firebase_uid` antigo/diferente — conta órfã) → **reclaim**: reassocia
+///      a conta a este uid, com a mesma prova de posse de email já exigida no
+///      cadastro. Isso destrava o email (antes ele ficava preso pelo UNIQUE).
+///   3. Nada existe → cria a conta normalmente.
+///
+/// A prova de posse do email é: provider `password` → `email_verification_token`
+/// (código de 6 dígitos); provider verificado (Google) → claim `email_verified`.
 async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -118,27 +146,44 @@ async fn register(
     let token = extract_bearer_token(&headers)?;
     let claims = verify_firebase_jwt_token(&state, &token).await?;
 
+    // (1) Idempotência: conta já existe para este firebase_uid.
     if let Some(existing) =
         user_service::get_user_by_firebase_uid(&state.db, claims.sub.clone()).await?
     {
-        return Err(AppError::Conflict(format!(
-            "Usuario ja registrado: {}",
-            existing.email
-        )));
+        return Ok(Json(existing));
     }
 
     let (email, display_name) = resolve_registration_identity(&claims, &payload)?;
 
-    let user = if requires_email_verification_code(&claims) {
-        let email_verification_token = payload
-            .email_verification_token
-            .clone()
-            .map(|token| token.trim().to_string())
-            .filter(|token| !token.is_empty())
-            .ok_or_else(|| {
-                AppError::BadRequest("Verifique seu email antes de concluir o cadastro".into())
-            })?;
+    // (2) Reclaim: existe conta com este email, presa a outro firebase_uid.
+    if user_service::get_user_by_email(&state.db, email.clone())
+        .await?
+        .is_some()
+    {
+        let user = if requires_email_verification_code(&claims) {
+            let email_verification_token = require_email_verification_token(&payload)?;
+            auth_service::reclaim_user_with_email_verification(
+                &state.db,
+                &state.config,
+                claims.sub,
+                email,
+                email_verification_token,
+            )
+            .await?
+        } else {
+            if !provider_is_already_verified(&claims) {
+                return Err(AppError::BadRequest(
+                    "Email do provedor de login nao esta verificado".into(),
+                ));
+            }
+            user_service::rebind_firebase_uid(&state.db, email, claims.sub).await?
+        };
+        return Ok(Json(user));
+    }
 
+    // (3) Conta nova.
+    let user = if requires_email_verification_code(&claims) {
+        let email_verification_token = require_email_verification_token(&payload)?;
         auth_service::create_user_with_email_verification(
             &state.db,
             &state.config,
@@ -204,11 +249,31 @@ async fn delete_me(
     }))
 }
 
+/// `PUT /auth/me` — troca o modo da conta (personal↔parental) sem recriá-la.
+/// Apenas Firebase JWT (o titular); Device Tokens (filhos) são rejeitados — o
+/// middleware já barra PUT de Device Token com 403, e aqui reforçamos por
+/// defesa em profundidade. Trocar de modo NÃO mexe nos vínculos de filhos nem na
+/// blocklist; a regra "pai imune" passa a valer (ou deixa de valer) no próximo
+/// sync. Permitido mesmo com filhos vinculados — a UI confirma quando há filhos.
+async fn update_me(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(payload): Json<UpdateModeRequest>,
+) -> Result<Json<User>, AppError> {
+    if auth.source != AuthSource::Firebase {
+        return Err(AppError::Forbidden(
+            "Apenas o titular da conta Firebase pode trocar o modo".into(),
+        ));
+    }
+    let user = user_service::update_mode(&state.db, auth.user_id, payload.mode).await?;
+    Ok(Json(user))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        fallback_display_name, provider_is_already_verified, requires_email_verification_code,
-        resolve_registration_identity,
+        fallback_display_name, provider_is_already_verified, require_email_verification_token,
+        requires_email_verification_code, resolve_registration_identity,
     };
     use crate::middleware::{FirebaseAuthInfo, FirebaseClaims};
     use crate::models::{BlockMode, RegisterRequest};
@@ -293,6 +358,26 @@ mod tests {
             fallback_display_name("focus.user@example.com"),
             "focus.user"
         );
+    }
+
+    #[test]
+    fn require_email_verification_token_extracts_and_trims() {
+        let mut p = payload("focus@example.com", "Focus");
+        p.email_verification_token = Some("  tok-123  ".into());
+        assert_eq!(
+            require_email_verification_token(&p).expect("token presente"),
+            "tok-123"
+        );
+    }
+
+    #[test]
+    fn require_email_verification_token_rejects_missing_or_blank() {
+        let mut p = payload("focus@example.com", "Focus");
+        p.email_verification_token = None;
+        assert!(require_email_verification_token(&p).is_err());
+
+        p.email_verification_token = Some("   ".into());
+        assert!(require_email_verification_token(&p).is_err());
     }
 
     #[test]

@@ -15,7 +15,7 @@
 <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
     {#each toasts as t (t.id)}
         <div
-            class="card flex min-w-[280px] max-w-md items-start gap-3 px-4 py-3 text-sm shadow-lg animate-[slide-in_200ms_ease-out]"
+            class="card flex min-w-[280px] max-w-md items-start gap-3 px-4 py-3 text-sm shadow-(--shadow-overlay) animate-[slide-in_200ms_ease-out]"
             class:border-success={t.kind === 'success'}
             class:border-danger={t.kind === 'error'}
             class:border-border={t.kind === 'info'}

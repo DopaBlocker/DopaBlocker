@@ -17,6 +17,8 @@
 
 use axum::{
     extract::{Path, State},
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::{delete, get, put},
     Extension, Json, Router,
 };
@@ -41,12 +43,29 @@ pub fn router() -> Router<AppState> {
 
 /// `GET /blocklist` — retorna todos os itens bloqueados do user autenticado,
 /// mais recentes primeiro. Funciona tanto via JWT quanto via Device Token.
+///
+/// Suporta **ETag/`If-None-Match`** (B2): o poll periódico do filho manda o
+/// último ETag recebido; se a lista não mudou, devolvemos **`304 Not Modified`**
+/// (sem corpo) — barateando o polling de ~30–60s. Calculamos o ETag (uma query
+/// agregada barata) antes de materializar a lista inteira.
 async fn list_items(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
-) -> Result<Json<Vec<BlockedItem>>, AppError> {
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let etag = blocklist_service::blocklist_etag(&state.db, auth.user_id.clone()).await?;
+
+    let unchanged = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|prev| prev == etag);
+
+    if unchanged {
+        return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
+    }
+
     let items = blocklist_service::list_items(&state.db, auth.user_id).await?;
-    Ok(Json(items))
+    Ok(([(header::ETAG, etag)], Json(items)).into_response())
 }
 
 /// `POST /blocklist` — adiciona domínio/app/keyword à blocklist. Como é

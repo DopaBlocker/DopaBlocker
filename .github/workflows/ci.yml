@@ -1,0 +1,82 @@
+# =============================================================================
+# CI do DopaBlocker (D3) — roda em ubuntu-latest, onde o OpenSSL (exigido pelo
+# `bundled-sqlcipher`) é um simples `apt install`, eliminando o atrito de build
+# do Windows. Três jobs independentes: Rust, frontend desktop e mobile.
+# =============================================================================
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancela execuções antigas do mesmo ref quando um novo push chega.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Rust: crate `shared` + `backend`. Escopado de propósito — NÃO compila
+  # `desktop/src-tauri` no Linux para evitar as deps de GUI do Tauri
+  # (libwebkit2gtk-4.1-dev, libgtk-3-dev, ...). Se um dia quisermos testar o
+  # crate do desktop na CI, adicionar essas libs e `-p dopablocker-desktop`.
+  # ---------------------------------------------------------------------------
+  rust:
+    name: Rust (shared + backend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instala OpenSSL (linka com bundled-sqlcipher)
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test -p dopablocker-shared -p dopablocker-backend
+
+  # ---------------------------------------------------------------------------
+  # Frontend desktop: type-check via svelte-check (pnpm workspace na raiz).
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: Frontend desktop (pnpm check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+      - name: svelte-check
+        run: pnpm --filter desktop check
+
+  # ---------------------------------------------------------------------------
+  # Mobile: análise estática. `flutter analyze` NÃO precisa de
+  # google-services.json (só o gradle build precisa), então roda na CI sem
+  # segredos do Firebase.
+  # ---------------------------------------------------------------------------
+  mobile:
+    name: Mobile (flutter analyze)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: flutter pub get
+        run: flutter pub get
+        working-directory: mobile
+      # `--no-fatal-infos`: o projeto tem um backlog de lints info-level
+      # (deprecações de withOpacity/activeColor etc.) que não são deste escopo.
+      # A CI falha em warnings/errors reais, sem travar nos infos pré-existentes.
+      - name: flutter analyze
+        run: flutter analyze --no-fatal-infos
+        working-directory: mobile

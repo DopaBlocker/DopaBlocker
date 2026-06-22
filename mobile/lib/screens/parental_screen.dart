@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/device.dart';
+import '../models/device_event.dart';
+import '../providers/device_event_provider.dart';
 import '../providers/device_provider.dart';
 import '../theme.dart';
 import '../widgets/countdown_text.dart';
@@ -34,6 +36,8 @@ class ParentalScreen extends ConsumerWidget {
         children: [
           _LinkCodeCard(state: state),
           const SizedBox(height: 24),
+          const _AlertsCard(),
+          const SizedBox(height: 24),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -43,10 +47,11 @@ class ParentalScreen extends ConsumerWidget {
           ),
           if (children.isEmpty)
             const Padding(
-              padding: EdgeInsets.symmetric(vertical: 32),
-              child: Center(
-                child: Text('Nenhum filho vinculado ainda.',
-                    style: TextStyle(color: AppColors.textFaint)),
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: AppEmptyState(
+                icon: Icons.devices_other,
+                title: 'Nenhum filho vinculado',
+                description: 'Gere um código acima e peça para o filho digitar no app dele.',
               ),
             )
           else
@@ -100,18 +105,11 @@ class _LinkCodeCard extends ConsumerWidget {
                     textAlign: TextAlign.center,
                     style: TextStyle(color: AppColors.textSecondary, fontSize: 13)),
                 const SizedBox(height: 16),
-                FilledButton.icon(
-                  onPressed: state.isGenerating
-                      ? null
-                      : () => ref.read(deviceProvider.notifier).generateLinkCode(),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  icon: state.isGenerating
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : const Icon(Icons.add_link),
-                  label: const Text('Gerar código'),
+                AppButton(
+                  label: 'Gerar código',
+                  icon: Icons.add_link,
+                  loading: state.isGenerating,
+                  onPressed: () => ref.read(deviceProvider.notifier).generateLinkCode(),
                 ),
               ],
             )
@@ -138,7 +136,7 @@ class _LinkCodeCard extends ConsumerWidget {
                       ),
                       child: Text(
                         i < code.length ? code[i] : '',
-                        style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: AppColors.primary),
+                        style: AppType.mono(size: 26, weight: FontWeight.w800, color: AppColors.primary),
                       ),
                     ),
                 ],
@@ -146,15 +144,91 @@ class _LinkCodeCard extends ConsumerWidget {
             ),
             const SizedBox(height: 12),
             Center(
-              child: TextButton.icon(
+              child: AppButton(
+                label: 'Gerar novo',
+                icon: Icons.refresh,
+                variant: AppButtonVariant.ghost,
+                fullWidth: false,
                 onPressed: () => ref.read(deviceProvider.notifier).generateLinkCode(),
-                icon: const Icon(Icons.refresh, size: 16, color: AppColors.textSecondary),
-                label: const Text('Gerar novo', style: TextStyle(color: AppColors.textSecondary)),
               ),
             ),
           ],
         ],
       ),
+    );
+  }
+}
+
+/// Painel de alertas de adulteração (C2.1): mostra quando um filho desligou a
+/// VPN ou abriu as Configs de VPN/DNS. Entrega in-app (sem push nesta fase).
+class _AlertsCard extends ConsumerWidget {
+  const _AlertsCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final events = ref.watch(deviceEventsProvider).events;
+
+    return AppCard(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.warning_amber_rounded, size: 16, color: AppColors.warning),
+              const SizedBox(width: 6),
+              const Text('ALERTAS',
+                  style: TextStyle(
+                      color: AppColors.textFaint,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1.2)),
+              const Spacer(),
+              if (events.isNotEmpty)
+                AppChip('${events.length}', color: AppColors.danger),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (events.isEmpty)
+            const Text('Nenhum alerta. A proteção dos filhos está intacta.',
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 13))
+          else
+            for (final e in events.take(5)) ...[
+              _AlertRow(event: e),
+              const SizedBox(height: 8),
+            ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AlertRow extends StatelessWidget {
+  final DeviceEvent event;
+  const _AlertRow({required this.event});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(top: 2),
+          child: Icon(Icons.shield_moon_outlined, size: 16, color: AppColors.danger),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(event.label,
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              Text(event.createdAt,
+                  style: const TextStyle(color: AppColors.textFaint, fontSize: 11)),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

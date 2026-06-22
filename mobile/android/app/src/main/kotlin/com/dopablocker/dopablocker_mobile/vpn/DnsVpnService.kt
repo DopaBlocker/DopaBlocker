@@ -10,6 +10,8 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.dopablocker.dopablocker_mobile.TamperReporter
+import com.dopablocker.dopablocker_mobile.accessibility.AppBlockerService
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.concurrent.ExecutorService
@@ -51,6 +53,8 @@ class DnsVpnService : VpnService() {
         // Carrega a blocklist persistida ANTES de aceitar queries — cobre o
         // restart pelo sistema e o boot (quando o Dart ainda não rodou).
         loadBlocklist(this)
+        // Aplica o filtro adulto persistido (escolhe o upstream filtrado/normal).
+        loadAdultFilter(this)
 
         // TUN virtual roteando só o DNS virtual (10.0.0.1) — sinkhole DNS-only.
         tunInterface = Builder()
@@ -106,6 +110,10 @@ class DnsVpnService : VpnService() {
             val dns = DnsPacket.buildBlockResponse(datagram.payload, qType)
             if (dns.isNotEmpty()) writePacket(DnsPacket.buildIpv4UdpResponse(packet, dns))
             Log.i(TAG, "BLOCK -> 127.0.0.1 $qName")
+            // Overlay de site bloqueado (C1): best-effort, só se a acessibilidade
+            // estiver ativa e um navegador em foco. Sem ela, o bloqueio DNS segue
+            // normal — apenas não há tela.
+            AppBlockerService.instance?.notifyBlockedDomain(qName)
         } else {
             val upstream = DnsForwarder.forward(datagram.payload) { protect(it) }
             val dns = upstream ?: DnsPacket.buildServfail(datagram.payload)
@@ -142,8 +150,11 @@ class DnsVpnService : VpnService() {
     }
 
     /// Chamado quando o usuário desliga a VPN nas Configurações ou outra VPN
-    /// assume — limpa o estado e marca como inativo.
+    /// assume — limpa o estado e marca como inativo. Antes disso, REPORTA o
+    /// evento ao backend (C2.1): no device do filho, o pai passa a ver que a
+    /// proteção caiu (é o maior ganho anti-bypass do mobile sem root).
     override fun onRevoke() {
+        TamperReporter.report(applicationContext, "vpn_revoked")
         stopVpn()
         super.onRevoke()
     }
@@ -184,6 +195,7 @@ class DnsVpnService : VpnService() {
         const val PREFS = "dopablocker_prefs"
         const val KEY_BLOCKING_ACTIVE = "blocking_active"
         const val KEY_BLOCKLIST = "blocklist"
+        const val KEY_ADULT_FILTER = "adult_filter"
 
         /// Blocklist em runtime (já normalizada). `@Volatile`: lida no loop,
         /// escrita pelo MethodChannel — troca de referência é atômica.
@@ -209,6 +221,20 @@ class DnsVpnService : VpnService() {
         /// Recarrega a blocklist persistida para o runtime (boot/restart).
         fun loadBlocklist(context: Context) {
             blocklist = prefs(context).getStringSet(KEY_BLOCKLIST, emptySet())?.toSet() ?: emptySet()
+        }
+
+        /// Liga/desliga o filtro adulto (C4): persiste a flag e troca o upstream
+        /// do `DnsForwarder` para o resolver de família ou o padrão. Não exige
+        /// reiniciar a VPN.
+        fun setAdultFilter(context: Context, enabled: Boolean) {
+            prefs(context).edit().putBoolean(KEY_ADULT_FILTER, enabled).apply()
+            DnsForwarder.upstreams = DnsForwarder.upstreamsFor(enabled)
+        }
+
+        /// Recarrega a flag de filtro adulto e aplica o upstream (boot/restart).
+        fun loadAdultFilter(context: Context) {
+            val enabled = prefs(context).getBoolean(KEY_ADULT_FILTER, false)
+            DnsForwarder.upstreams = DnsForwarder.upstreamsFor(enabled)
         }
 
         /// Persiste a flag lida pelo BootReceiver para religar após o boot.

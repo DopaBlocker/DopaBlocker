@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:dio/dio.dart';
 
+import '../channels/blocking_channel.dart';
 import '../core/api_client.dart';
 import '../core/auth_header_holder.dart';
 import '../core/constants.dart';
@@ -77,6 +78,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       AuthHeaderHolder.instance.setChild(token);
       final valid = await _api.me().then((_) => true).catchError((_) => false);
       if (valid) {
+        _syncTamperConfig(deviceToken: token, isChild: true);
         state = AuthChildSession(deviceToken: token, deviceId: deviceId, userId: userId);
         return;
       }
@@ -164,6 +166,42 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
+  /// Cadastro por email/senha. Dirige o fluxo inteiro a partir da tela de
+  /// cadastro: cria a conta no Firebase e conclui o registro local com o
+  /// `emailVerificationToken` (obtido via email-code/verify). Diferente de
+  /// [register], que parte do estado AuthPendingLocalRegistration.
+  Future<void> registerWithEmail({
+    required String email,
+    required String password,
+    required String displayName,
+    required String mode,
+    required String emailVerificationToken,
+  }) async {
+    state = AuthAuthenticating();
+    fb.UserCredential? cred;
+    try {
+      AuthHeaderHolder.instance.clear();
+      cred = await _firebase.createAccountWithEmail(email, password);
+      AuthHeaderHolder.instance.setFirebase();
+      final user = await _api.register(
+        email: email,
+        displayName: displayName,
+        mode: mode,
+        emailVerificationToken: emailVerificationToken,
+      );
+      state = AuthAuthenticated(user: user, firebaseUser: cred.user!);
+    } catch (_) {
+      // Firebase criou o usuário mas o backend falhou: remove o órfão para o
+      // email ficar livre numa nova tentativa (best-effort).
+      try {
+        await cred?.user?.delete();
+      } catch (_) {}
+      AuthHeaderHolder.instance.clear();
+      state = AuthSignedOut();
+      rethrow;
+    }
+  }
+
   // ── Fluxo filho ────────────────────────────────────────────────────────────
 
   Future<void> confirmChildCode(String code, String deviceName) async {
@@ -175,6 +213,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       await _storage.write(key: AppConstants.keyDeviceId, value: response.deviceId);
       await _storage.write(key: AppConstants.keyUserId, value: response.userId);
       AuthHeaderHolder.instance.setChild(response.deviceToken);
+      _syncTamperConfig(deviceToken: response.deviceToken, isChild: true);
       state = AuthChildSession(
         deviceToken: response.deviceToken,
         deviceId: response.deviceId,
@@ -198,11 +237,32 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = AuthSignedOut();
   }
 
+  /// Exclui a conta permanentemente. Ordem (igual ao desktop): **backend
+  /// primeiro**, com o token Firebase ainda válido — assim o `DELETE /auth/me`
+  /// realmente apaga o user e libera o email (UNIQUE). Se invertêssemos, após
+  /// `deleteAccount()` no Firebase o `getIdToken()` volta null e o backend
+  /// rejeitaria com 401, deixando um órfão que prende o email no recadastro.
+  /// Se o backend falhar, propaga e NÃO toca no Firebase. Se o Firebase exigir
+  /// `requires-recent-login`, o backend já foi apagado (email livre) e o erro
+  /// propaga para a UI oferecer o relogin.
   Future<void> deleteAccount() async {
     await _api.deleteAccount();
-    await _firebase.signOut();
+    await _firebase.deleteAccount();
     AuthHeaderHolder.instance.clear();
     state = AuthSignedOut();
+  }
+
+  /// Troca o modo da conta (personal↔parental) sem recriá-la. Só em sessão
+  /// autenticada (Firebase); atualiza o `user` em memória no sucesso para a UI
+  /// refletir na hora. O efeito no engine/sync vem no próximo poll.
+  Future<User> updateMode(String mode) async {
+    final current = state;
+    if (current is! AuthAuthenticated) {
+      throw StateError('Só é possível trocar o modo em sessão autenticada.');
+    }
+    final user = await _api.updateMode(mode);
+    state = AuthAuthenticated(user: user, firebaseUser: current.firebaseUser);
+    return user;
   }
 
   /// Tenta sincronizar novamente com o backend quando em BackendUnavailable.
@@ -220,5 +280,18 @@ class AuthNotifier extends StateNotifier<AuthState> {
     await _storage.delete(key: AppConstants.keyDeviceToken);
     await _storage.delete(key: AppConstants.keyDeviceId);
     await _storage.delete(key: AppConstants.keyUserId);
+    // Limpa a config de tamper no nativo (sem token = não reporta mais).
+    _syncTamperConfig(deviceToken: null, isChild: false);
+  }
+
+  /// Espelha no engine nativo os dados que o `TamperReporter` usa para reportar
+  /// adulteração ao backend (o nativo não lê o `flutter_secure_storage`).
+  /// `isChild=false`/token nulo desativa o report.
+  void _syncTamperConfig({String? deviceToken, required bool isChild}) {
+    BlockingChannel.setTamperConfig(
+      deviceToken: deviceToken,
+      backendUrl: isChild ? AppConstants.backendUrl : null,
+      isChild: isChild,
+    ).catchError((_) {});
   }
 }

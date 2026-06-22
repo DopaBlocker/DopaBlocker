@@ -32,14 +32,11 @@ class BlockListTile extends StatelessWidget {
         _ => 'Site',
       };
 
-  Widget get _chip {
-    if (!item.isActive) return AppChip.warning('pausado');
-    return switch (item.itemType) {
-      'app' => const AppChip('app'),
-      'keyword' => AppChip.warning('tema'),
-      _ => const AppChip('site'),
-    };
-  }
+  Widget get _chip => switch (item.itemType) {
+        'app' => const AppChip('app'),
+        'keyword' => AppChip.warning('tema'),
+        _ => const AppChip('site'),
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -85,7 +82,7 @@ class BlockListTile extends StatelessWidget {
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 24),
         decoration: BoxDecoration(
-          color: AppColors.danger.withOpacity(0.15),
+          color: AppColors.danger.withValues(alpha: 0.15),
           borderRadius: BorderRadius.circular(18),
         ),
         child: const Icon(Icons.delete_outline, color: AppColors.danger),

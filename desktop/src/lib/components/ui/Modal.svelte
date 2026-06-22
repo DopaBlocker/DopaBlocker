@@ -44,14 +44,14 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
         onclick={onOverlayClick}
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-scrim px-4 backdrop-blur-sm"
     >
         <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="modal-title"
             tabindex="-1"
-            class="card w-full max-w-md animate-[fade-in_150ms_ease-out]"
+            class="card w-full max-w-md rounded-xl animate-[fade-in_150ms_ease-out]"
             style="box-shadow: var(--shadow-overlay)"
         >
             <header

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/user.dart';
 import '../models/blocked_item.dart';
 import '../models/device.dart';
+import '../models/device_event.dart';
 import 'api_dtos.dart';
 import 'auth_header_holder.dart';
 import 'constants.dart';
@@ -73,13 +74,46 @@ class ApiClient {
     return User.fromJson(res.data as Map<String, dynamic>);
   }
 
+  /// Troca o modo da conta (personal↔parental) sem recriá-la. Só Firebase JWT.
+  Future<User> updateMode(String mode) async {
+    final res = await _dio.put('/auth/me', data: {'mode': mode});
+    return User.fromJson(res.data as Map<String, dynamic>);
+  }
+
   Future<void> deleteAccount() => _dio.delete('/auth/me');
 
   // ── Blocklist ───────────────────────────────────────────────────────────────
 
+  /// Último ETag visto de `GET /blocklist` (B2). Usado para `If-None-Match`.
+  String? _blocklistEtag;
+
   Future<List<BlockedItem>> getBlocklist() async {
     final res = await _dio.get('/blocklist');
+    _blocklistEtag = res.headers.value('etag') ?? _blocklistEtag;
     return (res.data as List).map((e) => BlockedItem.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  /// Busca a blocklist usando ETag/`If-None-Match` (B2 — poll periódico do
+  /// filho). Retorna `null` quando o backend responde **304** (lista
+  /// inalterada): o chamador mantém a lista atual e poupa banda. Erros de auth
+  /// (401, revogação) continuam propagando como `DioException`.
+  Future<List<BlockedItem>?> getBlocklistIfChanged() async {
+    final res = await _dio.get(
+      '/blocklist',
+      options: Options(
+        headers: _blocklistEtag != null ? {'If-None-Match': _blocklistEtag} : null,
+        validateStatus: (s) => s == 200 || s == 304,
+      ),
+    );
+    if (res.statusCode == 304) return null;
+    _blocklistEtag = res.headers.value('etag') ?? _blocklistEtag;
+    return (res.data as List).map((e) => BlockedItem.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  /// `GET /devices/events` — alertas de adulteração dos filhos (só pai/Firebase).
+  Future<List<DeviceEvent>> getDeviceEvents() async {
+    final res = await _dio.get('/devices/events');
+    return (res.data as List).map((e) => DeviceEvent.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   Future<BlockedItem> addBlockedItem({required String itemType, required String value}) async {

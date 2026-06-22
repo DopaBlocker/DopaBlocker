@@ -12,6 +12,11 @@
     <!-- Reiniciar o bloqueio automaticamente após o reboot do dispositivo -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Sobrepor a outros apps: garante que o overlay de bloqueio (app/site)
+         apareça por cima do app/navegador de forma confiável entre OEMs. É uma
+         permissão de "acesso especial" — concedida pelo usuário em Configurações. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <application
         android:label="DopaBlocker"
         android:name="${applicationName}"
@@ -39,6 +44,18 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- Overlay full-screen mostrado quando um app bloqueado é aberto (C3).
+             exported=false (só o AppBlockerService a lança); singleTask +
+             excludeFromRecents para não acumular instâncias nem aparecer nos
+             recentes. -->
+        <activity
+            android:name=".accessibility.BlockOverlayActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@style/NormalTheme" />
 
         <!-- VPN de bloqueio DNS. Protegida por BIND_VPN_SERVICE: apenas o
              sistema pode vinculá-la. O foregroundServiceType "specialUse" é
@@ -95,6 +112,20 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Enumerar apps lançáveis para o seletor visual de bloqueio de app.
+             Necessário no Android 11+/API 30 (package visibility) e evita o
+             QUERY_ALL_PACKAGES, que é sensível na Play Store. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN"/>
+            <category android:name="android.intent.category.LAUNCHER"/>
+        </intent>
+        <!-- Enumerar navegadores (respondem a https VIEW/BROWSABLE) para gatear o
+             overlay de site só quando o usuário está num navegador. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <category android:name="android.intent.category.BROWSABLE"/>
+            <data android:scheme="https"/>
         </intent>
     </queries>
 </manifest>

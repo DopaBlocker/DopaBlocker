@@ -18,7 +18,7 @@ Monorepo com 4 sub-projetos:
 | `shared/` | Crate Rust (modelos, bloom filter, domain matcher) | Funcional |
 | `backend/` | API REST Rust/Axum + SQLCipher | Funcional |
 | `desktop/` | Tauri 2 (Rust) + SvelteKit + Tailwind v4 | Funcional |
-| `mobile/` | Flutter + Kotlin | Parcial — bloqueio de **sites por DNS** funcional; apps e filtro adulto pendentes |
+| `mobile/` | Flutter + Kotlin | Funcional — bloqueio de **sites (DNS)**, **apps** (overlay + seletor visual) e **conteúdo adulto** (Cloudflare for Families); pendente: cache SQLCipher Dart + fila offline |
 
 `shared`, `backend` e `desktop/src-tauri` formam **um único workspace Cargo** (ver
 [Cargo.toml](Cargo.toml) na raiz) — comandos `cargo` na raiz operam nos três.
@@ -131,7 +131,8 @@ Guard de rota em [+layout.svelte](desktop/src/routes/+layout.svelte): sessão Fi
 
 Banco SQLite criptografado (AES-256) via `PRAGMA key`. O **backend é a fonte de verdade**; o
 **SQLCipher local do desktop é cache offline** do qual o engine lê a blocklist. Migrations do
-backend em `backend/migrations/` (`001_initial`, `002_parental_fixes`, `003_email_verification`).
+backend em `backend/migrations/` (`001_initial`, `002_parental_fixes`, `003_email_verification`,
+`004_device_events`).
 
 ## Convenções e armadilhas
 
@@ -140,13 +141,51 @@ backend em `backend/migrations/` (`001_initial`, `002_parental_fixes`, `003_emai
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (estado atual), [docs/RUNBOOK.md](docs/RUNBOOK.md)
   (limitações conhecidas), [docs/DECISOES_E_ROADMAP.md](docs/DECISOES_E_ROADMAP.md) (o que é
   proposta/roadmap) e no código. `ARCHITECTURE`/`API`/`RUNBOOK` descrevem só o estado atual.
-- **`mobile/` é parcial** (v0.2): o **bloqueio de sites por DNS** está implementado e testado
-  (engine nativo em `mobile/android/.../vpn/`: `DnsVpnService`, `DnsPacket`, `DomainMatcher`,
-  `DnsForwarder`; testes JVM + instrumentados no emulador). Ainda **pendentes**: bloqueio de
-  apps (`AppBlockerService` só detecta), filtro de conteúdo adulto, e cache SQLCipher Dart.
-  Não assuma que o que está pendente funciona.
+- **`mobile/`** (v0.x): **bloqueio de sites por DNS** (engine nativo em `mobile/android/.../vpn/`:
+  `DnsVpnService`, `DnsPacket`, `DomainMatcher`, `DnsForwarder`; testes JVM + instrumentados),
+  **bloqueio de apps** (`AppBlockerService` lança o overlay full-screen `BlockOverlayActivity`;
+  seletor visual de apps via `InstalledAppsProvider`) e **filtro de conteúdo adulto** (Cloudflare
+  for Families `1.1.1.3`) estão **implementados**. Ainda **pendentes**: cache local SQLCipher em
+  Dart (`mobile/lib/core/database_service.dart` é stub) e fila de escrita offline. Não assuma que
+  o que está pendente funciona.
+  - **App-block exige permissões do sistema concedidas pelo usuário**: o AccessibilityService
+    (detecta o app aberto) **e** `SYSTEM_ALERT_WINDOW` ("sobrepor a outros apps", p/ o overlay).
+    Sem isso o app entra na lista mas **não bloqueia** — há UI pedindo as permissões (banner em
+    Bloqueios + tiles na Conta; estado em `providers/permissions_provider.dart`). Ao detectar app
+    bloqueado o serviço também dá `GLOBAL_ACTION_HOME` (o app "abre e fecha sozinho").
+  - **No device do filho o bloqueio é obrigatório**: a `child_blocked_screen.dart` vira um **muro de
+    setup** (VPN → acessibilidade → overlay; o passo de VPN usa `BlockingChannel.isVpnPrepared`) e só
+    mostra "Proteção ativa" quando tudo é concedido — então o engine **sobe sozinho**
+    (`blockingProvider.ensureEngineRunning`: VPN + sync) e reaplica no `resumed`. Antes a tela dizia
+    "bloqueio ativo" mas nunca iniciava a VPN. Não volte a tratar a sessão de filho como read-only
+    passiva sem reativar o engine.
+  - **O `BlockOverlayActivity` é compartilhado**: cobre app bloqueado **e** site bloqueado. Para
+    site, o `DnsVpnService` sinaliza `AppBlockerService.notifyBlockedDomain` (mesmo processo) e o
+    overlay só aparece se um **navegador** estiver em foco (debounce por domínio). Não dá pra
+    servir página no navegador sem root (portas 80/443 + HTTPS) — por isso é overlay.
+- **Desktop não bloqueia app** (por design — o engine só carrega domínios); na sincronização
+  Mobile→PC do modo pessoal, só **sites** se propagam. Bloqueio de app é exclusivo do mobile.
+- **Sync por polling em todas as sessões**: o cache local (de onde o engine lê) é mantido em dia
+  por polling periódico (~30–45s, com ETag/304) — device-filho **e** modo pessoal/pai. Desktop:
+  `blockingStore.startAutoSync` ligado no [+layout.svelte](desktop/src/routes/+layout.svelte); filho em [child-blocked](desktop/src/routes/child-blocked/+page.svelte). Mobile: `_startPollIfNeeded`
+  em [blocking_provider.dart](mobile/lib/providers/blocking_provider.dart).
 - **Mudou um modelo? Mude em `shared/`**: `User`, `Device`, `BlockedItem` etc. vivem na crate
   `shared` e são reusados por backend e desktop; o frontend espelha em `desktop/src/lib/types.ts`.
+- **Excluir conta = backend ANTES do Firebase** (desktop `routes/settings/+page.svelte`; mobile
+  `providers/auth_provider.dart`): chame `DELETE /auth/me` **enquanto o token Firebase é válido**
+  e só então apague o user do Firebase. Invertendo, após o delete do Firebase o `getIdToken()`
+  volta `null`, o `DELETE /auth/me` sai sem token (401) e o user fica **órfão no backend**. Continua
+  sendo a ordem correta — não reintroduza Firebase-primeiro. **Mas o órfão não é mais beco sem
+  saída:** `POST /auth/register` é **idempotente** e faz **reclaim** (reassocia uma conta órfã do
+  mesmo email a um `firebase_uid` novo, provando posse do email pelo mesmo mecanismo do cadastro),
+  então o `email UNIQUE` não trava mais o recadastro. Trocar `personal`↔`parental` é via
+  `PUT /auth/me` (sem recriar a conta). Ver [docs/API.md](docs/API.md) e A5 em
+  [docs/DECISOES_E_ROADMAP.md](docs/DECISOES_E_ROADMAP.md).
+- **Frontend mobile e desktop têm paridade**: mesmos design tokens (mobile `lib/theme.dart` ↔
+  desktop `src/app.css` — tema escuro azul→roxo, Inter + JetBrains Mono, motion `ease-out`
+  Expo) e mesma IA/rótulos (**Início · Bloqueios · Filhos[só parental] · Conta**). Só exiba o
+  que o backend/engine suporta de verdade (não há endpoint de estatísticas — nada de dashboard
+  de métricas). Ao mexer numa tela, mantenha a paridade entre as duas plataformas.
 
 ## Mapa de documentação (`docs/`)
 

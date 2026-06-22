@@ -16,10 +16,23 @@
 // confirma o código de vinculação pela primeira vez.
 // =============================================================================
 
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
-use axum::{middleware as axum_mw, routing::get, Router};
+use axum::{
+    extract::State,
+    http::{header, Method, StatusCode},
+    middleware as axum_mw,
+    response::{IntoResponse, Response},
+    routing::get,
+    Json, Router,
+};
+use serde_json::json;
 use tokio_rusqlite::Connection;
+use tower_governor::{
+    governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer,
+};
 use tower_http::cors::CorsLayer;
 
 mod config;
@@ -99,9 +112,31 @@ async fn main() {
     //
     //    O `/health` é público (sem auth) para health-checks de infra.
     // -------------------------------------------------------------------------
+    // Rate-limit por IP (GCRA via `tower_governor`) aplicado SÓ às rotas
+    // públicas de auth (`/auth/*`) e ao `/devices/link/confirm` — o ponto de
+    // abuso (spam de código por email, brute-force de login/código). Rotas
+    // protegidas ficam de fora (o poll do filho passa por elas). O
+    // `SmartIpKeyExtractor` usa `x-forwarded-for`/`x-real-ip` atrás de proxy e
+    // cai no IP do peer (exige `into_make_service_with_connect_info`).
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(AUTH_RATE_REPLENISH_SECS)
+            .burst_size(AUTH_RATE_BURST)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("configuração de rate-limit inválida"),
+    );
+    // Limpeza periódica do storage do rate-limiter (entradas antigas).
+    let governor_limiter = governor_conf.limiter().clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(60));
+        governor_limiter.retain_recent();
+    });
+
     let public_routes = Router::new()
         .merge(routes::auth::public_router())
-        .merge(routes::devices::public_router());
+        .merge(routes::devices::public_router())
+        .layer(GovernorLayer::new(governor_conf));
 
     let protected_routes = Router::new()
         .merge(routes::auth::protected_router())
@@ -113,12 +148,14 @@ async fn main() {
         ));
 
     let app = Router::new()
+        // `/health` = liveness simples; `/healthz` = readiness que valida o
+        // banco SQLCipher (ver `healthz`). Ambos públicos para health-checks.
         .route("/health", get(|| async { "OK" }))
+        .route("/healthz", get(healthz))
         .merge(public_routes)
         .merge(protected_routes)
-        // CORS permissivo só para desenvolvimento. Em prod, restringir ao
-        // domínio do frontend.
-        .layer(CorsLayer::permissive())
+        // CORS por allowlist (config). Em prod, definir `CORS_ALLOWED_ORIGINS`.
+        .layer(build_cors(&app_config))
         .with_state(state);
 
     // -------------------------------------------------------------------------
@@ -132,5 +169,62 @@ async fn main() {
         .expect("Falha ao bindar porta");
     tracing::info!("Listening on {}", address);
 
-    axum::serve(listener, app).await.expect("Servidor falhou");
+    // `into_make_service_with_connect_info` injeta o `SocketAddr` do peer em
+    // cada request — necessário para o `SmartIpKeyExtractor` do rate-limiter
+    // chavear por IP quando não há header de proxy.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .expect("Servidor falhou");
+}
+
+/// Parâmetros do rate-limit das rotas públicas de auth (GCRA por IP).
+/// `BURST` = quantas requisições um IP pode disparar de imediato; depois disso,
+/// repõe 1 permissão a cada `REPLENISH_SECS` (≈ 12/min sustentado após o burst).
+const AUTH_RATE_BURST: u32 = 10;
+const AUTH_RATE_REPLENISH_SECS: u64 = 5;
+
+/// `GET /healthz` — readiness estruturada. Roda um `SELECT 1` para provar que a
+/// conexão SQLCipher está aberta e que a `PRAGMA key` descriptografou o banco
+/// (chave errada falha já aqui). 200 = saudável; 503 = banco inacessível.
+async fn healthz(State(state): State<AppState>) -> Response {
+    let probe = state
+        .db
+        .call(|c| Ok(c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))?))
+        .await;
+
+    match probe {
+        Ok(_) => (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "healthz: banco inacessível");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "status": "error" })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Monta o `CorsLayer` a partir da allowlist da config. Origens que não
+/// parseiam como `HeaderValue` são ignoradas (defesa contra config malformada).
+fn build_cors(config: &config::AppConfig) -> CorsLayer {
+    let origins: Vec<axum::http::HeaderValue> = config
+        .cors_allowed_origins
+        .iter()
+        .filter_map(|origin| origin.parse().ok())
+        .collect();
+
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
 }

@@ -11,6 +11,7 @@
 -->
 <script lang="ts">
     import { goto } from '$app/navigation';
+    import BrandMark from '$lib/components/ui/BrandMark.svelte';
 
     type Mode = 'personal' | 'parental' | 'child';
 
@@ -54,16 +55,16 @@
     }
 </script>
 
-<div class="flex min-h-screen flex-col items-center justify-center bg-bg p-6">
-    <div class="w-full max-w-3xl">
+<div class="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-bg p-6">
+    <!-- Glow de marca atrás do header. -->
+    <div
+        class="pointer-events-none absolute left-1/2 top-20 h-72 w-72 -translate-x-1/2 rounded-full opacity-10 blur-3xl"
+        style="background: linear-gradient(135deg, var(--brand-from), var(--brand-to))"
+    ></div>
+    <div class="relative w-full max-w-3xl">
         <!-- Header -->
         <div class="mb-10 flex flex-col items-center gap-3 text-center">
-            <div
-                class="flex h-12 w-12 items-center justify-center rounded-lg"
-                style="background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%)"
-            >
-                <div class="h-5 w-5 rounded-sm bg-white/90"></div>
-            </div>
+            <BrandMark size="md" />
             <div>
                 <h1 class="text-2xl font-semibold tracking-tight text-gradient">
                     DopaBlocker
@@ -80,7 +81,8 @@
                 <button
                     type="button"
                     onclick={() => handleSelect(option.mode)}
-                    class="group flex flex-col items-start gap-3 rounded-lg border border-border bg-surface p-5 text-left transition-all hover:border-primary hover:bg-surface-2 focus-visible:border-primary focus-visible:bg-surface-2"
+                    style="border-top-color: var(--color-hairline)"
+                    class="group flex flex-col items-start gap-3 rounded-lg border border-border bg-surface p-5 text-left shadow-(--shadow-card) transition-all hover:border-primary hover:bg-surface-2 focus-visible:border-primary focus-visible:bg-surface-2"
                 >
                     <div
                         class="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-surface-2 text-text-muted transition-colors group-hover:border-primary group-hover:text-primary"
@@ -120,7 +122,7 @@
         </div>
 
         <p class="mt-8 text-center text-[11px] text-text-dim">
-            Você pode trocar de modo depois saindo da conta nas Configurações.
+            Você pode alternar entre Pessoal e Pais quando quiser, nas Configurações.
         </p>
     </div>
 </div>

@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount } from 'svelte';
+    import BrandMark from '$lib/components/ui/BrandMark.svelte';
 
     import {
         AUTH_BOOTING_STATE,
@@ -72,7 +73,7 @@
                 password = '';
                 confirmPassword = '';
                 infoMessage =
-                    'Sua conta já entrou no Firebase. Falta concluir o cadastro local para entrar no app.';
+                    'Estamos finalizando seu cadastro neste dispositivo. Toque abaixo para concluir.';
                 formError = state.error;
                 return;
             }
@@ -130,7 +131,7 @@
     function switchTab(next: Tab) {
         if (pendingLocalRegistration && next === 'signin') {
             tab = 'signup';
-            infoMessage = 'Conclua o cadastro local abaixo para destravar o app.';
+            infoMessage = 'Conclua o cadastro abaixo para continuar.';
             return;
         }
 
@@ -385,12 +386,7 @@
 
 <div class="w-full max-w-md">
     <div class="mb-8 flex flex-col items-center gap-3 text-center">
-        <div
-            class="flex h-10 w-10 items-center justify-center rounded-lg"
-            style="background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%)"
-        >
-            <div class="h-4 w-4 rounded-sm bg-white/90"></div>
-        </div>
+        <BrandMark size="sm" />
         <div>
             <h1 class="text-lg font-semibold tracking-tight text-gradient">DopaBlocker</h1>
             <p class="mt-1 text-xs text-text-muted">
@@ -513,7 +509,7 @@
                         maxlength={6}
                         pattern={'[0-9]{6}'}
                         bind:value={verificationCode}
-                        class="input"
+                        class="input num text-center text-lg tracking-[0.4em]"
                         placeholder="000000"
                     />
                 </label>
@@ -545,7 +541,7 @@
                     <div
                         class="rounded-md border border-secondary/50 bg-secondary/10 px-3 py-2 text-xs text-secondary"
                     >
-                        Seu login Firebase já está pronto. Falta criar o registro local desta máquina.
+                        Estamos finalizando seu cadastro neste dispositivo.
                     </div>
                 {/if}
 

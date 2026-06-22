@@ -39,6 +39,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "003_email_verification",
         include_str!("../migrations/003_email_verification.sql"),
     ),
+    (
+        "004_device_events",
+        include_str!("../migrations/004_device_events.sql"),
+    ),
 ];
 
 /// Abre o arquivo `.db` e aplica imediatamente o `PRAGMA key` que

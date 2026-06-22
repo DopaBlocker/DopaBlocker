@@ -25,6 +25,7 @@
 
 pub mod auth_service;
 pub mod blocklist_service;
+pub mod device_event_service;
 pub mod device_service;
 pub mod user_service;
 pub mod util;

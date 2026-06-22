@@ -52,6 +52,15 @@ pub struct RegisterRequest {
     pub email_verification_token: Option<String>,
 }
 
+/// Body de `PUT /auth/me`. Troca o modo de operação da conta (personal↔parental)
+/// sem recriá-la — o `firebase_uid`/email/devices ficam intactos. A regra do
+/// "pai imune" é recomputada por `mode` no próximo sync, então a troca tem
+/// efeito imediato.
+#[derive(Debug, Deserialize)]
+pub struct UpdateModeRequest {
+    pub mode: BlockMode, // Personal ou Parental.
+}
+
 /// Body de `POST /auth/email-code/start`.
 #[derive(Debug, Deserialize)]
 pub struct EmailCodeStartRequest {
@@ -138,6 +147,29 @@ pub struct ConfirmLinkResponse {
     pub device_id: String,        // id do device filho recém-criado
     pub user_id: String,          // id do user do PAI (filhos não têm user próprio)
     pub parent_device_id: String, // id do device que gerou o código
+}
+
+/// Evento de adulteração (tamper) reportado por um device filho. Resposta de
+/// `GET /devices/events` (visível só para o pai). Modelo só-de-resposta do
+/// backend — o mobile espelha em Dart.
+#[derive(Debug, Serialize)]
+pub struct DeviceEvent {
+    pub id: String,
+    pub user_id: String,
+    pub device_id: String,
+    /// "vpn_revoked" | "vpn_settings_opened" | "dns_settings_opened".
+    pub kind: String,
+    pub created_at: String,
+    pub acknowledged_at: Option<String>,
+}
+
+/// Body de `POST /devices/tamper` (rota PÚBLICA). O filho se autentica pelo
+/// próprio Device Token NO CORPO (com ou sem o prefixo `dt_`), e não pelo
+/// header — assim a regra read-only do middleware não precisa ser flexibilizada.
+#[derive(Debug, Deserialize)]
+pub struct TamperReportRequest {
+    pub device_token: String,
+    pub kind: String,
 }
 
 // ---- Respostas utilitárias ----

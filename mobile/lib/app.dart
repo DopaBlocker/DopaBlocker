@@ -25,14 +25,51 @@ class App extends ConsumerWidget {
       themeMode: ThemeMode.dark,
       // A tela raiz é determinada pelo estado de auth; navegações internas
       // (login → home) acontecem via mudança de estado do StateNotifier.
-      home: _resolveHome(auth),
-      routes: {
-        AppRoutes.welcome: (_) => const WelcomeScreen(),
-        AppRoutes.login: (_) => const LoginScreen(),
-        AppRoutes.childCode: (_) => const ChildCodeScreen(),
-        AppRoutes.home: (_) => const MainShell(),
-        AppRoutes.childBlocked: (_) => const ChildBlockedScreen(),
-        AppRoutes.linkDevice: (_) => const LinkDeviceScreen(),
+      // AnimatedSwitcher dá um crossfade suave entre os estados (splash →
+      // welcome → home → filho) em vez de um corte seco.
+      home: AnimatedSwitcher(
+        duration: AppDurations.enter,
+        switchInCurve: AppCurves.out,
+        switchOutCurve: AppCurves.in_,
+        child: KeyedSubtree(
+          key: ValueKey(auth.runtimeType),
+          child: _resolveHome(auth),
+        ),
+      ),
+      onGenerateRoute: _onGenerateRoute,
+    );
+  }
+
+  /// Rotas nomeadas com transição consistente (fade + leve slide, Expo-out).
+  /// `settings` é repassado para preservar os argumentos (ex.: login recebe
+  /// 'personal'/'parental'). Respeita reduced-motion.
+  Route<dynamic>? _onGenerateRoute(RouteSettings settings) {
+    final Widget? page = switch (settings.name) {
+      AppRoutes.welcome => const WelcomeScreen(),
+      AppRoutes.login => const LoginScreen(),
+      AppRoutes.childCode => const ChildCodeScreen(),
+      AppRoutes.home => const MainShell(),
+      AppRoutes.childBlocked => const ChildBlockedScreen(),
+      AppRoutes.linkDevice => const LinkDeviceScreen(),
+      _ => null,
+    };
+    if (page == null) return null;
+    return PageRouteBuilder(
+      settings: settings,
+      transitionDuration: AppDurations.enter,
+      reverseTransitionDuration: AppDurations.exit,
+      pageBuilder: (_, _, _) => page,
+      transitionsBuilder: (context, anim, _, child) {
+        final reduce = MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+        if (reduce) return child;
+        final curved = CurvedAnimation(parent: anim, curve: AppCurves.out);
+        return FadeTransition(
+          opacity: curved,
+          child: SlideTransition(
+            position: Tween(begin: const Offset(0, 0.03), end: Offset.zero).animate(curved),
+            child: child,
+          ),
+        );
       },
     );
   }

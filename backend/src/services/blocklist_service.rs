@@ -136,6 +136,33 @@ pub async fn list_items(db: &Connection, user_id: String) -> Result<Vec<BlockedI
     .map_err(|e| AppError::InternalServerError(e.to_string()))
 }
 
+/// Calcula um **ETag fraco** da blocklist do user, para o poll periódico do
+/// filho (B2) economizar banda via `If-None-Match` → `304 Not Modified`.
+///
+/// O validador é `COUNT(*)` + `MAX(created_at)`: cobre adições (mudam contagem
+/// e/ou o máximo) e remoções (mudam a contagem). Como o backend não tem um
+/// toggle server-side de `is_active` (isso é só client-side), esses dois
+/// agregados bastam para detectar qualquer mudança na lista efetiva que o
+/// cliente recebe. É barato (uma query agregada, sem materializar linhas).
+pub async fn blocklist_etag(db: &Connection, user_id: String) -> Result<String, AppError> {
+    db.call(move |c| {
+        let (count, max_created): (i64, Option<String>) = c.query_row(
+            "SELECT COUNT(*), MAX(created_at) FROM blocked_items WHERE user_id = ?1",
+            params![user_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(format_blocklist_etag(count, max_created.as_deref()))
+    })
+    .await
+    .map_err(|e| AppError::InternalServerError(e.to_string()))
+}
+
+/// Formata o ETag (entre aspas, como manda o HTTP) a partir dos agregados.
+/// Pura/determinística para ser testável sem banco.
+fn format_blocklist_etag(count: i64, max_created: Option<&str>) -> String {
+    format!("\"{}-{}\"", count, max_created.unwrap_or_default())
+}
+
 /// Deleta item com segurança: o `AND user_id = ?2` é crítico — sem ele,
 /// qualquer user poderia deletar items de outros se adivinhasse o UUID.
 /// Se o DELETE não afetou nenhuma linha, retornamos 404 (não existe ou
@@ -204,4 +231,25 @@ pub async fn set_adult_filter(
     })
     .await
     .map_err(|e| AppError::InternalServerError(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_blocklist_etag;
+
+    #[test]
+    fn etag_is_quoted_and_combines_count_and_timestamp() {
+        let etag = format_blocklist_etag(3, Some("2026-06-21T10:00:00Z"));
+        assert_eq!(etag, "\"3-2026-06-21T10:00:00Z\"");
+    }
+
+    #[test]
+    fn etag_changes_with_count_and_handles_empty_list() {
+        // Lista vazia → sem max(created_at).
+        assert_eq!(format_blocklist_etag(0, None), "\"0-\"");
+        // Mesma data, contagem diferente → ETag diferente (detecta remoção).
+        let a = format_blocklist_etag(2, Some("2026-06-21T10:00:00Z"));
+        let b = format_blocklist_etag(1, Some("2026-06-21T10:00:00Z"));
+        assert_ne!(a, b);
+    }
 }

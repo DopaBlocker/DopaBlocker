@@ -10,6 +10,7 @@
 <script lang="ts">
     import { goto } from '$app/navigation';
     import ChildCodeInput from '$lib/components/ChildCodeInput.svelte';
+    import BrandMark from '$lib/components/ui/BrandMark.svelte';
     import { authStore } from '$lib/stores/auth';
 
     let submitting = $state(false);
@@ -45,12 +46,7 @@
 <div class="flex min-h-screen items-center justify-center bg-surface p-6">
     <div class="w-full max-w-md">
         <div class="mb-8 flex flex-col items-center gap-3 text-center">
-            <div
-                class="flex h-10 w-10 items-center justify-center rounded-lg"
-                style="background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%)"
-            >
-                <div class="h-4 w-4 rounded-sm bg-white/90"></div>
-            </div>
+            <BrandMark size="sm" />
             <div>
                 <h1 class="text-lg font-semibold tracking-tight text-gradient">
                     Vincular este dispositivo
