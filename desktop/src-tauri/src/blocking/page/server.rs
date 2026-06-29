@@ -30,11 +30,10 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 
-use super::{
+use super::{ca::LocalCa, tls_resolver::SniCertResolver};
+use crate::blocking::policy::{
     adult_filter::AdultFilter,
     block_reason::{self, BlockReason},
-    ca::LocalCa,
-    tls_resolver::SniCertResolver,
 };
 
 const HTTP_DEFAULT_PORT: u16 = 80;
@@ -72,10 +71,7 @@ pub async fn run_http(
     adult: Arc<AdultFilter>,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let port: u16 = std::env::var("DOPABLOCKER_BLOCK_PAGE_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(HTTP_DEFAULT_PORT);
+    let port = crate::blocking::util::env_port("DOPABLOCKER_BLOCK_PAGE_PORT", HTTP_DEFAULT_PORT);
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
     let listener = TcpListener::bind(addr)
@@ -132,10 +128,8 @@ pub async fn run_https(
     ca: Arc<LocalCa>,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let port: u16 = std::env::var("DOPABLOCKER_BLOCK_PAGE_HTTPS_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(HTTPS_DEFAULT_PORT);
+    let port =
+        crate::blocking::util::env_port("DOPABLOCKER_BLOCK_PAGE_HTTPS_PORT", HTTPS_DEFAULT_PORT);
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -279,18 +273,6 @@ fn html_escape(s: &str) -> String {
         }
     }
     out
-}
-
-// Compat wrapper: o `run` antigo ficou como `run_http`. Mantemos o símbolo
-// pra se algum código externo ainda chamar — mas não existe uso fora do
-// engine, então é só defensivo.
-#[allow(dead_code)]
-pub async fn run(
-    rules: Arc<RwLock<HashSet<String>>>,
-    adult: Arc<AdultFilter>,
-    shutdown: oneshot::Receiver<()>,
-) -> Result<()> {
-    run_http(rules, adult, shutdown).await
 }
 
 #[cfg(test)]

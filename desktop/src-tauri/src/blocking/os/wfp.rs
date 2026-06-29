@@ -90,10 +90,10 @@ const LOOPBACK_V6: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 
 /// Lista bundled de IPs IPv4 de resolvers DoH conhecidos.
 /// Curada manualmente em `shared/data/doh-ipv4.txt` — atualizar via PR.
-const DOH_IPV4_RAW: &str = include_str!("../../../../shared/data/doh-ipv4.txt");
+const DOH_IPV4_RAW: &str = include_str!("../../../../../shared/data/doh-ipv4.txt");
 
 /// Idem para IPv6.
-const DOH_IPV6_RAW: &str = include_str!("../../../../shared/data/doh-ipv6.txt");
+const DOH_IPV6_RAW: &str = include_str!("../../../../../shared/data/doh-ipv6.txt");
 
 /// Parser tolerante a comentarios (`#`) e linhas vazias. IPs invalidos sao
 /// pulados silenciosamente — o build NAO falha porque o arquivo e atualizado

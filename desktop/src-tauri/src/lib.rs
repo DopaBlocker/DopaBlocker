@@ -20,7 +20,7 @@
 //   - SetConsoleCtrlHandler (Windows) -> idem (ultima trincheira)
 //   - heal_orphan_dns SINCRONO no setup -> recovery se o app caiu antes
 //
-// Ver `blocking::system_dns::restore_dns_blocking_global` para detalhes.
+// Ver `blocking::os::system_dns::restore_dns_blocking_global` para detalhes.
 // =============================================================================
 
 mod blocking;
@@ -36,7 +36,7 @@ use tauri::{
 };
 use tokio::sync::Mutex;
 
-use blocking::{adult_filter::AdultFilter, engine::Engine};
+use blocking::{engine::Engine, policy::adult_filter::AdultFilter};
 
 #[derive(Clone)]
 pub struct AppPaths {
@@ -86,7 +86,7 @@ pub fn run() {
 
             // Inicializa SNAPSHOT_DIR para o restore sincrono. Tem que rodar
             // antes do panic hook (caso contrario o hook nao acha o snapshot).
-            blocking::system_dns::init_snapshot_dir(data_dir.clone());
+            blocking::os::system_dns::init_snapshot_dir(data_dir.clone());
 
             // Panic hook — qualquer panic durante o ciclo de vida do app
             // restaura o DNS antes de propagar. Em release o `panic = unwind`
@@ -106,7 +106,7 @@ pub fn run() {
             // mesmo da janela aparecer. Depois disso o usuario nao ve "rede
             // caida" enquanto o setup completa.
             tauri::async_runtime::block_on(async {
-                if let Err(e) = blocking::system_dns::heal_orphan_dns().await {
+                if let Err(e) = blocking::os::system_dns::heal_orphan_dns().await {
                     tracing::error!(error = %e, "self-heal sincrono de DNS orfao falhou");
                 }
             });
@@ -144,8 +144,12 @@ pub fn run() {
             let engine_resume = engine.clone();
             let data_dir_resume = data_dir.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) =
-                    resume_engine_if_enabled(&conn_resume, &engine_resume, &data_dir_resume).await
+                if let Err(e) = blocking::lifecycle::resume_if_enabled(
+                    &engine_resume,
+                    &conn_resume,
+                    &data_dir_resume,
+                )
+                .await
                 {
                     tracing::warn!(error = %e, "não foi possível reativar engine no boot");
                 }
@@ -203,7 +207,7 @@ pub fn run() {
     // tem o data_dir.
     app.run(|_app_handle, event| {
         if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
-            blocking::system_dns::restore_dns_blocking_global();
+            blocking::os::system_dns::restore_dns_blocking_global();
         }
     });
 }
@@ -214,7 +218,7 @@ fn install_panic_hook() {
         // Restaura DNS PRIMEIRO. Se o panic for durante o boot (antes de
         // SNAPSHOT_DIR ser inicializado), e no-op silencioso — nada de DNS
         // foi alterado ainda.
-        blocking::system_dns::restore_dns_blocking_global();
+        blocking::os::system_dns::restore_dns_blocking_global();
         // Encadeia o hook anterior para preservar o stack trace padrao.
         prev(info);
     }));
@@ -235,7 +239,7 @@ fn install_ctrl_handler() {
         match ctrl_type {
             CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT
             | CTRL_SHUTDOWN_EVENT => {
-                blocking::system_dns::restore_dns_blocking_global();
+                blocking::os::system_dns::restore_dns_blocking_global();
                 BOOL(0) // FALSE — chain to default
             }
             _ => BOOL(0),
@@ -310,93 +314,8 @@ fn shutdown_blocking_and_exit(app: AppHandle) {
         let engine = app.state::<Arc<Mutex<Engine>>>().inner().clone();
         let paths = app.state::<AppPaths>().inner().clone();
 
-        if let Err(e) = blocking::system_dns::restore_if_any(&conn, &paths.data_dir).await {
-            tracing::error!(error = %e, "falha ao restaurar DNS ao sair pelo tray");
-        }
-
-        {
-            let mut eng = engine.lock().await;
-            eng.stop().await;
-        }
-
-        if let Err(e) = db::set_blocking_enabled(&conn, false).await {
-            tracing::error!(error = %e, "falha ao persistir bloqueio desligado ao sair");
-        }
+        blocking::lifecycle::shutdown_and_disable(&engine, &conn, &paths.data_dir).await;
 
         app.exit(0);
     });
-}
-
-async fn resume_engine_if_enabled(
-    conn: &tokio_rusqlite::Connection,
-    engine: &Mutex<Engine>,
-    data_dir: &std::path::Path,
-) -> anyhow::Result<()> {
-    // O `heal_orphan_dns` ja rodou SINCRONO no setup. Aqui, complementa: faz
-    // o `restore_if_any` (que precisa de conn) e depois reativa o engine.
-    let restore_failed = match blocking::system_dns::restore_if_any(conn, data_dir).await {
-        Ok(()) => false,
-        Err(e) => {
-            tracing::error!(error = %e, "falha ao restaurar DNS no boot — desativando bloqueio por seguranca");
-            true
-        }
-    };
-
-    // Passo 2 (resume conservador): se o restore falhou, NAO reativamos o
-    // engine — caso contrario, `apply_and_remember` faria `capture_current`
-    // do estado quebrado, persistindo loopback como "DNS original" (bug raiz).
-    if restore_failed {
-        let _ = db::set_blocking_enabled(conn, false).await;
-        return Ok(());
-    }
-
-    let current_dns = match blocking::system_dns::capture_current().await {
-        Ok(snapshots) if !snapshots.is_empty() => snapshots,
-        Ok(_) => {
-            tracing::error!(
-                "nenhuma interface DNS elegivel no boot; bloqueio desativado por seguranca"
-            );
-            let _ = db::set_blocking_enabled(conn, false).await;
-            return Ok(());
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "falha ao capturar DNS no boot; bloqueio desativado por seguranca");
-            let _ = db::set_blocking_enabled(conn, false).await;
-            return Ok(());
-        }
-    };
-    tracing::debug!(
-        interfaces = current_dns.len(),
-        "preflight de DNS aprovado para resume"
-    );
-
-    if !db::get_blocking_enabled(conn).await? {
-        return Ok(());
-    }
-    let Some(user_id) = db::get_last_active_user_id(conn).await? else {
-        tracing::info!("flag blocking_enabled=true mas sem last_active_user_id — pulando resume");
-        return Ok(());
-    };
-    let rules = db::list_active_domains(conn, user_id.clone()).await?;
-
-    {
-        let mut eng = engine.lock().await;
-        if eng.is_running() {
-            return Ok(());
-        }
-        eng.start(rules).await.map_err(|e| anyhow::anyhow!("{e}"))?;
-    }
-
-    // Engine de pé — agora captura o DNS atual (já restaurado acima, então
-    // é o "de verdade") e aponta pro proxy. Se falhar, desliga tudo pra não
-    // deixar bloqueio meio-ativo.
-    if let Err(e) = blocking::system_dns::apply_and_remember(conn, data_dir).await {
-        tracing::warn!(error = %e, "falha ao reaplicar DNS no resume — revertendo");
-        let mut eng = engine.lock().await;
-        eng.stop().await;
-        return Err(e);
-    }
-
-    tracing::info!(%user_id, "engine reativado no boot");
-    Ok(())
 }

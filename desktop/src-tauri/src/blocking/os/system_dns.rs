@@ -329,48 +329,11 @@ pub async fn heal_orphan_dns() -> Result<()> {
     Ok(())
 }
 
-/// Versao do parser que NAO filtra loopback — usado so pelo `heal_orphan_dns`,
-/// porque para self-heal a gente *quer* ver as interfaces com loopback.
+/// Versao do parser que NAO aplica o "orphan guard" (mantem interfaces
+/// estaticas apontando so pra loopback) — usado so pelo `heal_orphan_dns`,
+/// porque para self-heal a gente *quer* ver essas interfaces.
 fn parse_raw_for_family(text: &str, family: DnsFamily) -> Vec<InterfaceDnsConfig> {
-    let mut out = Vec::new();
-    let mut current: Option<InterfaceDnsConfig> = None;
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if let Some(name) = extract_quoted_name(trimmed) {
-            if let Some(prev) = current.take() {
-                let lower = prev.name.to_lowercase();
-                if !lower.contains("loopback") {
-                    out.push(prev);
-                }
-            }
-            current = Some(InterfaceDnsConfig {
-                name,
-                family,
-                source: DnsSource::Static,
-                servers: Vec::new(),
-            });
-            continue;
-        }
-
-        let Some(cfg) = current.as_mut() else {
-            continue;
-        };
-        if trimmed.to_lowercase().contains("dhcp") {
-            cfg.source = DnsSource::Dhcp;
-        }
-        if let Some(ip) = extract_ip(trimmed, family) {
-            cfg.servers.push(ip);
-        }
-    }
-
-    if let Some(last) = current.take() {
-        let lower = last.name.to_lowercase();
-        if !lower.contains("loopback") {
-            out.push(last);
-        }
-    }
-    out
+    parse_interfaces(text, family, false)
 }
 
 // -------- capture ----------------------------------------------------------
@@ -560,6 +523,19 @@ fn parse_dnsservers_output(text: &str) -> Vec<InterfaceDnsConfig> {
 }
 
 fn parse_dnsservers_output_for_family(text: &str, family: DnsFamily) -> Vec<InterfaceDnsConfig> {
+    parse_interfaces(text, family, true)
+}
+
+/// Núcleo compartilhado do parser de `netsh interface ipvX show dnsservers`.
+/// `apply_orphan_guard=true` (captura) descarta interfaces estaticas cujos
+/// servers sao todos loopback; `false` (self-heal) as mantem para poder
+/// detectar e consertar o DNS orfao. Interfaces com "loopback" no nome sao
+/// sempre puladas. Ver `push_interface`.
+fn parse_interfaces(
+    text: &str,
+    family: DnsFamily,
+    apply_orphan_guard: bool,
+) -> Vec<InterfaceDnsConfig> {
     let mut out = Vec::new();
     let mut current: Option<InterfaceDnsConfig> = None;
 
@@ -567,7 +543,7 @@ fn parse_dnsservers_output_for_family(text: &str, family: DnsFamily) -> Vec<Inte
         let trimmed = line.trim();
         if let Some(name) = extract_quoted_name(trimmed) {
             if let Some(prev) = current.take() {
-                push_if_usable(&mut out, prev);
+                push_interface(&mut out, prev, apply_orphan_guard);
             }
             current = Some(InterfaceDnsConfig {
                 name,
@@ -590,7 +566,7 @@ fn parse_dnsservers_output_for_family(text: &str, family: DnsFamily) -> Vec<Inte
     }
 
     if let Some(last) = current.take() {
-        push_if_usable(&mut out, last);
+        push_interface(&mut out, last, apply_orphan_guard);
     }
     out
 }
@@ -624,21 +600,23 @@ fn normalize_ip_token(tok: &str) -> Option<String> {
     Some(without_zone.to_string())
 }
 
-fn push_if_usable(out: &mut Vec<InterfaceDnsConfig>, cfg: InterfaceDnsConfig) {
+/// Decide se uma interface entra no resultado. Sempre pula loopback-NAMED.
+/// Com `apply_orphan_guard`, tambem pula a interface estatica cujos servers
+/// sao todos loopback (estado orfao de um crash anterior): NAO podemos salvar
+/// 127.0.0.1/::1 como "DNS original do usuario" — se salvarmos, o restore
+/// "volta" para loopback e o sistema fica permanentemente quebrado. (DHCP com
+/// loopback nos servers e preservado: `set_dhcp` descarta os servers atuais.)
+fn push_interface(
+    out: &mut Vec<InterfaceDnsConfig>,
+    cfg: InterfaceDnsConfig,
+    apply_orphan_guard: bool,
+) {
     let lower = cfg.name.to_lowercase();
     if lower.contains("loopback") {
         return;
     }
-    // Defesa contra "DNS órfão" (cenário recorrente reportado): se a interface
-    // ja esta apontando para 127.0.0.1 ou ::1, isso significa que outro
-    // (ou nos mesmos, em estado zumbi) ja redirecionou. NAO podemos salvar
-    // isso como "DNS original do usuario" — se salvarmos, o restore vai
-    // "voltar" para 127.0.0.1 e o sistema fica permanentemente quebrado.
-    //
-    // Filtramos so quando a config for `Static` apontando para loopback —
-    // se for DHCP com loopback nos servers (caso teorico, raro), preservamos
-    // pois `set_dhcp` vai descartar os servers atuais.
-    if cfg.source == DnsSource::Static
+    if apply_orphan_guard
+        && cfg.source == DnsSource::Static
         && !cfg.servers.is_empty()
         && cfg.servers.iter().all(|ip| is_loopback(ip))
     {

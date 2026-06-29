@@ -14,7 +14,6 @@ use tokio::{net::UdpSocket, time::timeout};
 
 const DOH_TIMEOUT: Duration = Duration::from_secs(3);
 const UDP_TIMEOUT: Duration = Duration::from_secs(2);
-const MAX_DNS_PACKET: usize = 4096;
 
 #[derive(Clone)]
 enum Upstream {
@@ -117,7 +116,7 @@ async fn resolve_udp(upstream: SocketAddr, query: &[u8]) -> Result<Vec<u8>> {
         .await
         .context("UDP: bind efemero")?;
     sock.send_to(query, upstream).await.context("UDP: send")?;
-    let mut buf = vec![0u8; MAX_DNS_PACKET];
+    let mut buf = vec![0u8; super::MAX_DNS_PACKET];
     let (n, _) = timeout(UDP_TIMEOUT, sock.recv_from(&mut buf))
         .await
         .context("UDP: timeout")??;

@@ -12,52 +12,19 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::State;
 use tokio::sync::Mutex;
 use tokio_rusqlite::Connection;
 
-use dopablocker_shared::models::{BlockMode, BlockedItem};
-use dopablocker_shared::parental::{effective_strategy, BlocklistStrategy};
+use dopablocker_shared::models::BlockedItem;
 
-use crate::blocking::adult_filter::AdultFilter;
-use crate::blocking::ca::{InstallStatus, LocalCa};
 use crate::blocking::engine::Engine;
-use crate::blocking::system_dns;
+use crate::blocking::lifecycle::{self, ParentalContext};
+use crate::blocking::page::ca::{InstallStatus, LocalCa};
+use crate::blocking::policy::adult_filter::AdultFilter;
 use crate::db;
 use crate::AppPaths;
-
-/// Contexto da regra do pai imune que o frontend envia em cada operacao do
-/// engine. Sem isto, o engine nao tem como distinguir um device pai (que
-/// deve ficar imune) de um pessoal (que aplica tudo) — a info nao vive no
-/// SQLCipher local, mora no auth store do frontend.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ParentalContext {
-    pub mode: BlockMode,
-    pub is_child: bool,
-}
-
-impl ParentalContext {
-    fn personal() -> Self {
-        Self {
-            mode: BlockMode::Personal,
-            is_child: false,
-        }
-    }
-}
-
-async fn effective_rules(
-    conn: &Connection,
-    user_id: String,
-    ctx: &ParentalContext,
-) -> Result<Vec<String>, String> {
-    match effective_strategy(ctx.mode.clone(), ctx.is_child) {
-        BlocklistStrategy::Empty => Ok(Vec::new()),
-        BlocklistStrategy::ApplyAll => db::list_active_domains(conn, user_id)
-            .await
-            .map_err(stringify),
-    }
-}
 
 #[derive(Debug, Serialize)]
 pub struct BlockingStatus {
@@ -77,27 +44,6 @@ pub struct CaInstallResult {
 
 fn stringify<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
-}
-
-/// Recarrega as regras ativas do DB para o engine — chamar sempre que o
-/// cache local muda e o engine estiver rodando. Se não estiver, no-op.
-///
-/// Aplica a "regra do pai imune": no device do pai em modo parental, as regras
-/// efetivas sao vazias (lista cheia continua no DB para a UI mostrar, so o
-/// engine nao recebe).
-async fn refresh_engine_rules(
-    conn: &Connection,
-    engine: &Mutex<Engine>,
-    user_id: String,
-    ctx: &ParentalContext,
-) -> Result<(), String> {
-    let eng = engine.lock().await;
-    if !eng.is_running() {
-        return Ok(());
-    }
-    let rules = effective_rules(conn, user_id, ctx).await?;
-    eng.update_rules(rules).await;
-    Ok(())
 }
 
 #[tauri::command]
@@ -143,7 +89,7 @@ pub async fn save_blocklist(
     db::replace_all_for_user(&conn, user_id.clone(), items)
         .await
         .map_err(stringify)?;
-    refresh_engine_rules(&conn, &engine, user_id, &ctx).await
+    lifecycle::refresh_engine_rules(&conn, &engine, user_id, &ctx).await
 }
 
 #[tauri::command]
@@ -158,7 +104,7 @@ pub async fn cache_add_item(
     db::upsert_blocked_item(&conn, item)
         .await
         .map_err(stringify)?;
-    refresh_engine_rules(&conn, &engine, user_id, &ctx).await
+    lifecycle::refresh_engine_rules(&conn, &engine, user_id, &ctx).await
 }
 
 #[tauri::command]
@@ -173,7 +119,7 @@ pub async fn cache_remove_item(
     db::delete_blocked_item(&conn, id)
         .await
         .map_err(stringify)?;
-    refresh_engine_rules(&conn, &engine, user_id, &ctx).await
+    lifecycle::refresh_engine_rules(&conn, &engine, user_id, &ctx).await
 }
 
 /// Liga/desliga o engine de bloqueio (DNS proxy).
@@ -192,47 +138,14 @@ pub async fn set_blocking_enabled(
 ) -> Result<(), String> {
     let ctx = parental.unwrap_or_else(ParentalContext::personal);
     if enabled {
-        // 1. Sobe o proxy. Se falhar no bind (porta 53 sem admin, já ocupada),
-        //    nem chegamos a mexer no DNS do sistema.
-        //
-        // Aplica a regra do pai imune: device do pai em modo parental recebe
-        // lista vazia (engine roda mas nao bloqueia nada). Device pessoal e
-        // device filho recebem a lista cheia.
-        let rules = effective_rules(&conn, user_id.clone(), &ctx).await?;
-        {
-            let mut eng = engine.lock().await;
-            if eng.is_running() {
-                eng.update_rules(rules).await;
-            } else {
-                eng.start(rules).await.map_err(stringify)?;
-            }
-        }
-
-        // 2. Aponta o DNS do sistema pro proxy. Se falhar (tipicamente admin),
-        //    rollback no engine — melhor desligado do que meio-configurado.
-        if let Err(e) = system_dns::apply_and_remember(&conn, &paths.data_dir).await {
-            let mut eng = engine.lock().await;
-            eng.stop().await;
-            return Err(format!("falha ao trocar DNS do sistema: {e}"));
-        }
+        lifecycle::enable(&engine, &conn, &paths.data_dir, user_id, &ctx)
+            .await
+            .map_err(stringify)
     } else {
-        // Ordem importa: restaura o DNS ANTES de matar o proxy. Se matasse
-        // primeiro, haveria uma janela de segundos em que o sistema ainda
-        // aponta pra 127.0.0.1:53 mas ninguém está escutando → DNS quebrado.
-        if let Err(e) = system_dns::restore_if_any(&conn, &paths.data_dir).await {
-            tracing::error!(error = %e, "falha ao restaurar DNS — seguindo pra parar engine");
-        }
-        let mut eng = engine.lock().await;
-        eng.stop().await;
+        lifecycle::disable(&engine, &conn, &paths.data_dir, user_id)
+            .await
+            .map_err(stringify)
     }
-
-    db::set_blocking_enabled(&conn, enabled)
-        .await
-        .map_err(stringify)?;
-    db::set_last_active_user_id(&conn, user_id)
-        .await
-        .map_err(stringify)?;
-    Ok(())
 }
 
 #[tauri::command]

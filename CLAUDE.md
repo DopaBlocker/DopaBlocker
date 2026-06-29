@@ -93,17 +93,31 @@ quando a regra depende do tipo de credencial.
 
 ### Engine de bloqueio do desktop (`desktop/src-tauri/src/blocking/`)
 
-Orquestrado por [engine.rs](desktop/src-tauri/src/blocking/engine.rs). Ordem de start
-importa: **WFP primeiro** (fecha a janela de bypass), CA local → block page HTTP(:80) →
-HTTPS(:443) → **DNS proxy(:53)** que devolve `127.0.0.1`/NXDOMAIN para domínios bloqueados.
-Filtro de conteúdo adulto via **Bloom filter** (crate `shared`), construído em background no
-boot. Camadas de page são best-effort; o bloqueio por DNS funciona mesmo se :443/CA falharem.
+Módulo organizado **por cluster**: `dns/` (proxy + cache + upstream pool), `page/` (block page
+HTTP/HTTPS + CA local + resolver SNI), `policy/` (decisão de bloqueio + filtro adulto), `os/`
+(WFP + DNS do sistema), mais [engine.rs](desktop/src-tauri/src/blocking/engine.rs) e
+[lifecycle.rs](desktop/src-tauri/src/blocking/lifecycle.rs) na raiz do módulo (helpers comuns
+em `util.rs`).
 
-**Restauração de DNS é crítica**: [lib.rs](desktop/src-tauri/src/lib.rs) instala panic hook,
-`SetConsoleCtrlHandler` e trata `RunEvent::ExitRequested` para **restaurar o DNS do sistema**
-em qualquer saída (crash, logoff, shutdown). Há self-heal síncrono no boot que conserta DNS
-órfão apontando para loopback de um crash anterior. Ao mexer no ciclo de vida do app ou no
-DNS, **preserve esses caminhos de cleanup** — sem eles, um crash deixa o usuário sem internet.
+- **`engine.rs`** sobe/derruba o stack *in-process*. Ordem de start importa: **WFP primeiro**
+  (fecha a janela de bypass), CA local → block page HTTP(:80) → HTTPS(:443) → **DNS proxy(:53)**
+  que devolve `127.0.0.1`/NXDOMAIN para domínios bloqueados. Filtro de conteúdo adulto via
+  **Bloom filter** (crate `shared`), construído em background no boot. Camadas de page são
+  best-effort; o bloqueio por DNS funciona mesmo se :443/CA falharem.
+- **`lifecycle.rs`** é o **dono único da orquestração completa**: combina o `engine` + a troca do
+  **DNS do sistema** (`os::system_dns`) + o flag persistido no DB. Expõe `enable`/`disable`/
+  `resume_if_enabled`/`shutdown_and_disable`/`refresh_engine_rules`. [commands.rs](desktop/src-tauri/src/commands.rs)
+  (IPC) e [lib.rs](desktop/src-tauri/src/lib.rs) (boot/tray) **só delegam** para ele — não
+  reintroduza a coreografia "engine + DNS + rollback + flag" espalhada nesses arquivos. A decisão
+  "é bloqueio? por quê?" fica em `policy::block_reason`, compartilhada entre o DNS proxy e a block page.
+
+**Restauração de DNS é crítica**: o restore **síncrono** (sem tokio/SQLCipher, p/ panic e shutdown)
+vive em [os/system_dns.rs](desktop/src-tauri/src/blocking/os/system_dns.rs)
+(`restore_dns_blocking_global`); [lib.rs](desktop/src-tauri/src/lib.rs) instala panic hook,
+`SetConsoleCtrlHandler` e trata `RunEvent::ExitRequested` para **restaurar o DNS do sistema** em
+qualquer saída (crash, logoff, shutdown). Há self-heal síncrono no boot (`os::system_dns::heal_orphan_dns`)
+que conserta DNS órfão apontando para loopback de um crash anterior. Ao mexer no ciclo de vida do app
+ou no DNS, **preserve esses caminhos de cleanup** — sem eles, um crash deixa o usuário sem internet.
 
 ### Regra do "pai imune"
 

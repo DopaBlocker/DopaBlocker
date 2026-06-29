@@ -1,14 +1,15 @@
-// Módulo de bloqueio — orquestra o DNS proxy (cache + upstream pool),
-// WFP (etapa 9) e filtro adulto (etapa 8).
+// Módulo de bloqueio — agrupado por responsabilidade:
+//   - dns/      : data plane do DNS proxy (proxy, cache, upstream)
+//   - page/     : página de bloqueio HTTP/HTTPS + CA local + resolver SNI
+//   - policy/   : decisão de bloqueio (block_reason) e filtro adulto
+//   - os/       : enforcement no SO (WFP, DNS do sistema)
+//   - engine    : sobe/derruba o stack in-process (WFP, CA, páginas, DNS proxy)
+//   - lifecycle : dono único da orquestração (engine + DNS do sistema + flag no DB)
 
-pub mod adult_filter;
-pub mod block_page;
-pub mod block_reason;
-pub mod ca;
-pub mod dns_cache;
-pub mod dns_proxy;
-pub mod dns_upstream;
+pub mod dns;
 pub mod engine;
-pub mod system_dns;
-pub mod tls_resolver;
-pub mod wfp;
+pub mod lifecycle;
+pub mod os;
+pub mod page;
+pub mod policy;
+pub(crate) mod util;

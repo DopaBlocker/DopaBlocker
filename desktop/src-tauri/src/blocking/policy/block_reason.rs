@@ -21,7 +21,7 @@ use super::adult_filter::AdultFilter;
 
 /// Lista bundled de FQDNs de provedores DoH/DoT conhecidos. Atualizada
 /// manualmente. Build-time embed via include_str! — sem I/O em runtime.
-const DOH_FQDNS_RAW: &str = include_str!("../../../../shared/data/doh-fqdns.txt");
+const DOH_FQDNS_RAW: &str = include_str!("../../../../../shared/data/doh-fqdns.txt");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockReason {

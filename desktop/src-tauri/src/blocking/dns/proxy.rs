@@ -25,13 +25,11 @@ use tokio::{
     task::JoinSet,
 };
 
-use super::{
-    adult_filter::AdultFilter, block_reason, dns_cache::DnsCache, dns_upstream::UpstreamPool,
-};
+use super::{cache::DnsCache, upstream::UpstreamPool};
+use crate::blocking::policy::{adult_filter::AdultFilter, block_reason};
 
 const DEFAULT_PORT: u16 = 53;
 const BLOCK_REDIRECT_TTL_SECS: u32 = 5;
-const MAX_DNS_PACKET: usize = 4096;
 const MAX_TCP_MSG: usize = 65_535;
 
 pub async fn run(
@@ -40,10 +38,7 @@ pub async fn run(
     cache: DnsCache,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let port: u16 = std::env::var("DOPABLOCKER_DNS_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_PORT);
+    let port = crate::blocking::util::env_port("DOPABLOCKER_DNS_PORT", DEFAULT_PORT);
     let addrs = listener_addrs(port);
 
     let udp_sockets = bind_udp_sockets(&addrs).await?;
@@ -160,7 +155,7 @@ async fn udp_loop(
     cache: DnsCache,
     upstream: UpstreamPool,
 ) -> Result<()> {
-    let mut buf = vec![0u8; MAX_DNS_PACKET];
+    let mut buf = vec![0u8; super::MAX_DNS_PACKET];
     loop {
         let (n, client) = match socket.recv_from(&mut buf).await {
             Ok(v) => v,

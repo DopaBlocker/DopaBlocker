@@ -22,7 +22,11 @@ use tokio::{
     task::JoinHandle,
 };
 
-use super::{adult_filter::AdultFilter, block_page, ca::LocalCa, dns_cache::DnsCache, dns_proxy};
+use super::{
+    dns::{cache::DnsCache, proxy as dns_proxy},
+    page::{ca::LocalCa, server as block_page},
+    policy::adult_filter::AdultFilter,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -44,7 +48,7 @@ pub struct Engine {
     block_page_https_task: Option<JoinHandle<()>>,
     block_page_https_shutdown: Option<oneshot::Sender<()>>,
     #[cfg(target_os = "windows")]
-    wfp: Option<super::wfp::WfpSession>,
+    wfp: Option<super::os::wfp::WfpSession>,
 }
 
 impl Engine {
@@ -87,7 +91,7 @@ impl Engine {
         // `wfp.rs`), entao o proprio proxy continua podendo consultar upstream.
         #[cfg(target_os = "windows")]
         {
-            match super::wfp::WfpSession::install() {
+            match super::os::wfp::WfpSession::install() {
                 Ok(session) => self.wfp = Some(session),
                 Err(e) => {
                     tracing::warn!(error = %e, "WFP nao instalado; bloqueio fica so no DNS proxy");
