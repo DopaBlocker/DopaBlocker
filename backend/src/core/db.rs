@@ -18,7 +18,7 @@
 use rusqlite::params;
 use tokio_rusqlite::Connection;
 
-use crate::errors::AppError;
+use crate::core::errors::AppError;
 
 // Lista ordenada (por nome) das migrations. `include_str!` injeta o conteúdo
 // SQL no binário em tempo de compilação — se algum arquivo estiver faltando,
@@ -26,22 +26,22 @@ use crate::errors::AppError;
 //
 // Para adicionar uma nova migration:
 //   1. Crie `backend/migrations/003_<slug>.sql`.
-//   2. Adicione `("003_<slug>", include_str!("../migrations/003_<slug>.sql"))`
+//   2. Adicione `("003_<slug>", include_str!("../../migrations/003_<slug>.sql"))`
 //      ao final desta lista.
 //   3. Nunca edite migrations já aplicadas em produção — crie uma nova.
 const MIGRATIONS: &[(&str, &str)] = &[
-    ("001_initial", include_str!("../migrations/001_initial.sql")),
+    ("001_initial", include_str!("../../migrations/001_initial.sql")),
     (
         "002_parental_fixes",
-        include_str!("../migrations/002_parental_fixes.sql"),
+        include_str!("../../migrations/002_parental_fixes.sql"),
     ),
     (
         "003_email_verification",
-        include_str!("../migrations/003_email_verification.sql"),
+        include_str!("../../migrations/003_email_verification.sql"),
     ),
     (
         "004_device_events",
-        include_str!("../migrations/004_device_events.sql"),
+        include_str!("../../migrations/004_device_events.sql"),
     ),
 ];
 

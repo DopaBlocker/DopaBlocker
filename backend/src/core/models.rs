@@ -25,7 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
-// Re-exports dos models compartilhados. O backend usa `crate::models::User`
+// Re-exports dos models compartilhados. O backend usa `crate::core::models::User`
 // em vez de `dopablocker_shared::models::User`, ficando mais curto e
 // centralizando os imports em um só ponto (se algum dia trocarmos a
 // origem, é só aqui).

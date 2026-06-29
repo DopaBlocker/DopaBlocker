@@ -23,10 +23,11 @@ use rusqlite::{params, OptionalExtension};
 use tokio_rusqlite::Connection;
 use uuid::Uuid;
 
-use crate::errors::AppError;
-use crate::models::{BlockMode, User};
-use crate::services::auth_service::normalize_email;
-use crate::services::util::{block_mode_to_sql, parse_block_mode};
+use crate::core::errors::AppError;
+use crate::core::models::{BlockMode, User};
+use crate::core::util::{block_mode_to_sql, parse_block_mode};
+
+use super::email_code::normalize_email;
 
 // Conversões enum ↔ string vivem em `services/util.rs` (block_mode_to_sql /
 // parse_block_mode) — antes desta refatoração estavam duplicadas em quatro
@@ -46,7 +47,7 @@ pub async fn create_user(
     let id = Uuid::new_v4().to_string();
     let mode_str = block_mode_to_sql(&mode).to_string();
     // Normaliza o email antes de gravar para garantir consistencia em todo o
-    // app — `auth_service::create_user_with_email_verification` ja faz isso;
+    // app — `super::service::create_user_with_email_verification` ja faz isso;
     // este caminho (Google login direto) tambem precisa.
     let normalized_email = normalize_email(&email)?;
     let display_name = display_name.trim().to_string();
@@ -152,7 +153,7 @@ pub async fn get_user_by_email(db: &Connection, email: String) -> Result<Option<
 /// (Google), onde a posse do email já está provada por `email_verified` — sem
 /// código. Preserva `mode`, `id` e `created_at`; troca só o `firebase_uid`.
 /// O caminho com código (provider `password`) é o
-/// `auth_service::reclaim_user_with_email_verification`.
+/// `super::service::reclaim_user_with_email_verification`.
 pub async fn rebind_firebase_uid(
     db: &Connection,
     email: String,

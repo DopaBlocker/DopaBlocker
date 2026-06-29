@@ -22,46 +22,64 @@ A API foi construída em **Rust** utilizando o framework **Axum**, focando em al
 
 ```text
 backend/src/
-├── main.rs            # Ponto de entrada (Setup do Server, Router principal e AppState)
-├── config.rs          # Inicializa variáveis de ambiente (.env)
-├── errors.rs          # Definição e abstração global de Erros (Transforma erro de Rust em HTTP Status)
-├── middleware.rs      # Interceptores de chamadas (ex: Validação de Token de Autenticação)
-├── models.rs          # DTOs (Request e Response payloads da API) específicos da API
-├── routes/            # Definição dos métodos HTTP (GET, POST) dos fluxos principais
-│   ├── auth.rs
-│   ├── devices.rs
-│   └── blocklist.rs
-└── services/          # A Lógica de negócio e comunicação com Banco de Dados
-    ├── user_service.rs
-    ├── device_service.rs
-    └── blocklist_service.rs
+├── main.rs            # Boot fino (tracing + config + bootstrap + serve)
+├── app.rs             # Montagem do Router (rotas + CORS + rate-limit + health)
+├── bootstrap.rs       # Inicialização do AppState (db + migrations)
+├── core/              # Infra compartilhada (sem regra de negócio de feature)
+│   ├── config.rs      # Inicializa variáveis de ambiente (.env)
+│   ├── db.rs          # Conexão SQLCipher + migrations
+│   ├── errors.rs      # AppError global (erro de Rust → HTTP Status)
+│   ├── models.rs      # DTOs da API + re-exports da crate shared
+│   ├── util.rs        # ServiceError, timestamps ISO-8601, conversões enum↔SQL
+│   └── auth/          # Autenticação dual (Firebase JWT + Device Token)
+│       ├── middleware.rs   # require_auth + AuthUser/AuthSource
+│       ├── jwks.rs         # Cache das chaves públicas do Firebase
+│       ├── jwt.rs          # Claims + validação RS256
+│       └── device_token.rs # Hash + validação do Device Token
+└── features/          # Domínios de negócio (um diretório por feature)
+    ├── auth/          # /auth/* + verificação de email + CRUD de user
+    │   ├── routes.rs
+    │   ├── service.rs        # criação/reclaim de conta
+    │   ├── email_code.rs     # códigos/tokens de verificação
+    │   ├── email_delivery.rs # envio SMTP / log
+    │   └── user.rs           # CRUD da tabela users
+    ├── devices/       # /devices/* + vinculação parental + tamper
+    │   ├── routes.rs
+    │   ├── service.rs        # devices + linking
+    │   └── events.rs         # eventos de tamper
+    └── blocklist/     # /blocklist/* + filtro adulto + ETag
+        ├── routes.rs
+        └── service.rs
 ```
 
 ---
 
 ## 🏗️ Padrões de Arquitetura
 
-O Backend adota o padrão de "Rotas chamam Serviços". Isso blinda a regra de negócio e torna os testes unitários independentes do servidor web.
+O Backend é organizado **por feature/domínio**: a infra compartilhada vive em `core/`
+(`config`, `db`, `errors`, `models`, `util`, `auth`) e cada domínio em `features/<feature>/`
+(`auth`, `devices`, `blocklist`). Dentro de cada feature vale o padrão "Rotas chamam Serviços",
+que blinda a regra de negócio e torna os testes unitários independentes do servidor web.
 
-1. **A Requisição:** O Frontend chama a API (`/api/auth/register`).
-2. **O Middleware (`middleware.rs`):** Se a rota for protegida, o middleware extrai o cabeçalho `Authorization: Bearer <token>`, valida e injeta os dados do Usuário Atual (*Current User*) no contexto da requisição (`Router State / Extension`).
-3. **A Rota (`routes/`):** A Rota valida formalmente e processa o JSON (usando as estruturas de `models.rs`). Em seguida, chama o `service` repassando o Payload.
-4. **O Serviço (`services/`):** Aplica a regra de negócio (Bloqueios, verificação da Base de Dados) e devolve a Resposta ou levanta um `AppError` na pipeline global se algo falhar.
+1. **A Requisição:** O Frontend chama a API (`/auth/register`).
+2. **O Middleware (`core/auth/`):** Se a rota for protegida, `core::auth::require_auth` extrai o cabeçalho `Authorization: Bearer <token>`, valida e injeta o Usuário Atual (*Current User*) no contexto da requisição (`Extension<AuthUser>`).
+3. **A Rota (`features/<feature>/routes.rs`):** Valida formalmente e processa o JSON (usando os DTOs de `core/models.rs`). Em seguida, chama o módulo de domínio da feature repassando o Payload.
+4. **O Serviço (`features/<feature>/service.rs` e afins):** Aplica a regra de negócio (Bloqueios, verificação da Base de Dados) e devolve a Resposta ou levanta um `AppError` na pipeline global se algo falhar.
 5. **O Retorno:** A requisição responde o cliente com Status `200 OK` + JSON de Sucesso ou Intercepta e formata um Status de Erro sem explodir o Rust (ex: `400 Bad Request`).
 
 ### Exemplo de Fluxo
 
-**Em `routes/auth.rs`**:
+**Em `features/auth/routes.rs`**:
 ```rust
 async fn register_handler(Json(payload): Json<CreateUserRequest>) -> Result<Json<UserResponse>, AppError> {
-    // A rota apenas recebe e repassa para o service
-    let user = user_service::create_user(payload).await?;
-    
+    // A rota apenas recebe e repassa para o módulo da feature
+    let user = super::user::create_user(payload).await?;
+
     Ok(Json(UserResponse { message: "Sucesso".into(), user }))
 }
 ```
 
-**Em `services/user_service.rs`**:
+**Em `features/auth/user.rs`**:
 ```rust
 pub async fn create_user(payload: CreateUserRequest) -> Result<User, AppError> {
     // Realiza transações de banco de dados e validações complexas.
@@ -73,7 +91,7 @@ pub async fn create_user(payload: CreateUserRequest) -> Result<User, AppError> {
 
 ## 🔒 Tratamento de Erros
 
-No DopaBlocker, **nunca usamos `unwrap()`** diretamente dentro da regra de negócio para evitar quebras do servidor (Panic). Ao invés disso, propagamos o erro utilizando o enumerador `AppError` localizado em `errors.rs`.
+No DopaBlocker, **nunca usamos `unwrap()`** diretamente dentro da regra de negócio para evitar quebras do servidor (Panic). Ao invés disso, propagamos o erro utilizando o enumerador `AppError` localizado em `core/errors.rs`.
 
 O `AppError` implementa a Trait `IntoResponse` do Axum. Isso significa que podemos retornar um tipo nativo do Rust e ele "magicamente" o converte para o Frontend no formato JSON de falha correto:
 
@@ -132,4 +150,4 @@ O banco de dados utiliza a crate `rusqlite` com a feature `bundled-sqlcipher` pa
 
 ## 📝 Changelog Recente
 
-- **Atualização do Axum (Compatibilidade v0.7 / v0.8):** A sintaxe de definição de captura de parâmetros (path variables) sofreu *breaking changes*. Rotas definidas anteriormente como `/:id` foram corrigidas para a nova especificação baseada em chaves `/{id}` no arquivo `src/routes/blocklist.rs` para prevenir panics na inicialização do servidor.
+- **Atualização do Axum (Compatibilidade v0.7 / v0.8):** A sintaxe de definição de captura de parâmetros (path variables) sofreu *breaking changes*. Rotas definidas anteriormente como `/:id` foram corrigidas para a nova especificação baseada em chaves `/{id}` no arquivo `src/features/blocklist/routes.rs` para prevenir panics na inicialização do servidor.

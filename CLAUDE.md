@@ -40,8 +40,8 @@ Monorepo com 4 sub-projetos:
 | Backend via Docker | `cd infra && docker compose up --build` |
 
 - **Testes Rust** são módulos `#[test]` / `#[tokio::test]` **inline** nos próprios arquivos
-  (não há pasta `tests/`). Estão sobretudo em `shared/src/`, `backend/src/services/`,
-  `backend/src/routes/` e `desktop/src-tauri/src/blocking/`.
+  (não há pasta `tests/`). Estão sobretudo em `shared/src/`, `backend/src/core/`,
+  `backend/src/features/<feature>/` e `desktop/src-tauri/src/blocking/`.
 - `pnpm tauri:dev` dispara `beforeDevCommand: pnpm dev`, que roda
   [desktop/scripts/dev-with-backend.mjs](desktop/scripts/dev-with-backend.mjs): sobe o
   **backend em :3000** (se ainda não estiver saudável) e o **Vite em :5173**, e encerra
@@ -65,22 +65,33 @@ Monorepo com 4 sub-projetos:
 
 ### Backend (`backend/`) — Rust/Axum
 
-Padrão **"rotas chamam serviços"**: handlers em `routes/` validam o JSON e delegam a regra
-de negócio para `services/`, que falam com o SQLCipher. Erros propagam via `AppError`
-(`errors.rs`), que implementa `IntoResponse` → JSON `{ "error": "..." }`. **Nunca use
-`unwrap()` na regra de negócio** — propague com `?` / `AppError`.
+Organizado **por feature/domínio** (espelha o mobile `lib/core` + `lib/features`):
 
-- Entry point [backend/src/main.rs](backend/src/main.rs): carrega `.env`, abre o SQLCipher
-  (`PRAGMA key` é o **primeiro** comando, senão o banco não descriptografa), roda migrations
-  idempotentes, monta `AppState { config, db, jwks }`.
-- **Rotas públicas vs. protegidas**: `/health`, `/auth/register`, `/auth/login` e
-  `/devices/link/confirm` ficam **fora** do middleware de auth (o filho ainda não tem
-  credencial ao confirmar o código). O resto passa por `middleware::require_auth`.
+- `core/` — infra compartilhada: `config`, `db`, `errors`, `models`, `util` e o cluster
+  `auth/` (middleware dual + `jwks`/`jwt`/`device_token`).
+- `features/<feature>/` — um diretório por domínio (`auth`, `devices`, `blocklist`), cada um
+  com `routes.rs` (handlers) + módulos de domínio (`service.rs`, `email_code.rs`, etc.).
+- `app.rs` monta o `Router` (rotas + CORS + rate-limit + health); `bootstrap.rs` inicializa o
+  `AppState` (db + migrations); [main.rs](backend/src/main.rs) é o boot fino que costura os dois.
+
+Dentro de cada feature vale o padrão **"rotas chamam serviços"**: `routes.rs` valida o JSON e
+delega a regra de negócio para `service.rs`/módulos do domínio, que falam com o SQLCipher.
+Erros propagam via `AppError` (`core/errors.rs`), que implementa `IntoResponse` → JSON
+`{ "error": "..." }`. **Nunca use `unwrap()` na regra de negócio** — propague com `?` / `AppError`.
+
+- Boot: [backend/src/main.rs](backend/src/main.rs) (fino) → `bootstrap::init_state` abre o
+  SQLCipher (`PRAGMA key` é o **primeiro** comando, em `core/db.rs`, senão o banco não
+  descriptografa), roda migrations idempotentes e monta `AppState { config, db, jwks }`;
+  `app::build_router` monta as rotas.
+- **Rotas públicas vs. protegidas** (montadas em `app.rs`): `/health`, `/healthz`,
+  `/auth/register`, `/auth/login`, `/auth/email-code/start`, `/auth/email-code/verify`,
+  `/devices/link/confirm` e `/devices/tamper` ficam **fora** do middleware de auth (o filho
+  ainda não tem credencial ao confirmar o código). O resto passa por `core::auth::require_auth`.
 
 ### Autenticação dual
 
-O middleware ([backend/src/middleware.rs](backend/src/middleware.rs)) inspeciona o prefixo
-do `Authorization: Bearer`:
+O cluster de auth ([backend/src/core/auth/](backend/src/core/auth/) — `middleware.rs` +
+`jwt.rs` + `jwks.rs` + `device_token.rs`) inspeciona o prefixo do `Authorization: Bearer`:
 
 - **Firebase JWT** (sem prefixo) — contas Pessoal/Pais. Valida assinatura via JWKS do Google
   (cacheado ~6h em `JwksCache`), checa `iss`/`aud`/`exp`, resolve `user_id` por `firebase_uid`.
@@ -165,7 +176,7 @@ backend em `backend/migrations/` (`001_initial`, `002_parental_fixes`, `003_emai
   - **App-block exige permissões do sistema concedidas pelo usuário**: o AccessibilityService
     (detecta o app aberto) **e** `SYSTEM_ALERT_WINDOW` ("sobrepor a outros apps", p/ o overlay).
     Sem isso o app entra na lista mas **não bloqueia** — há UI pedindo as permissões (banner em
-    Bloqueios + tiles na Conta; estado em `providers/permissions_provider.dart`). Ao detectar app
+    Bloqueios + tiles na Conta; estado em `mobile/lib/features/blocking/providers/permissions_provider.dart`). Ao detectar app
     bloqueado o serviço também dá `GLOBAL_ACTION_HOME` (o app "abre e fecha sozinho").
   - **No device do filho o bloqueio é obrigatório**: a `child_blocked_screen.dart` vira um **muro de
     setup** (VPN → acessibilidade → overlay; o passo de VPN usa `BlockingChannel.isVpnPrepared`) e só
@@ -182,11 +193,11 @@ backend em `backend/migrations/` (`001_initial`, `002_parental_fixes`, `003_emai
 - **Sync por polling em todas as sessões**: o cache local (de onde o engine lê) é mantido em dia
   por polling periódico (~30–45s, com ETag/304) — device-filho **e** modo pessoal/pai. Desktop:
   `blockingStore.startAutoSync` ligado no [+layout.svelte](desktop/src/routes/+layout.svelte); filho em [child-blocked](desktop/src/routes/child-blocked/+page.svelte). Mobile: `_startPollIfNeeded`
-  em [blocking_provider.dart](mobile/lib/providers/blocking_provider.dart).
+  em [blocking_provider.dart](mobile/lib/features/blocking/providers/blocking_provider.dart).
 - **Mudou um modelo? Mude em `shared/`**: `User`, `Device`, `BlockedItem` etc. vivem na crate
   `shared` e são reusados por backend e desktop; o frontend espelha em `desktop/src/lib/types.ts`.
 - **Excluir conta = backend ANTES do Firebase** (desktop `routes/settings/+page.svelte`; mobile
-  `providers/auth_provider.dart`): chame `DELETE /auth/me` **enquanto o token Firebase é válido**
+  `mobile/lib/features/auth/providers/auth_provider.dart`): chame `DELETE /auth/me` **enquanto o token Firebase é válido**
   e só então apague o user do Firebase. Invertendo, após o delete do Firebase o `getIdToken()`
   volta `null`, o `DELETE /auth/me` sai sem token (401) e o user fica **órfão no backend**. Continua
   sendo a ordem correta — não reintroduza Firebase-primeiro. **Mas o órfão não é mais beco sem
@@ -195,7 +206,7 @@ backend em `backend/migrations/` (`001_initial`, `002_parental_fixes`, `003_emai
   então o `email UNIQUE` não trava mais o recadastro. Trocar `personal`↔`parental` é via
   `PUT /auth/me` (sem recriar a conta). Ver [docs/API.md](docs/API.md) e A5 em
   [docs/DECISOES_E_ROADMAP.md](docs/DECISOES_E_ROADMAP.md).
-- **Frontend mobile e desktop têm paridade**: mesmos design tokens (mobile `lib/theme.dart` ↔
+- **Frontend mobile e desktop têm paridade**: mesmos design tokens (mobile `lib/shared/theme.dart` ↔
   desktop `src/app.css` — tema escuro azul→roxo, Inter + JetBrains Mono, motion `ease-out`
   Expo) e mesma IA/rótulos (**Início · Bloqueios · Filhos[só parental] · Conta**). Só exiba o
   que o backend/engine suporta de verdade (não há endpoint de estatísticas — nada de dashboard

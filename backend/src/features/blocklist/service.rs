@@ -28,12 +28,12 @@ use uuid::Uuid;
 
 use dopablocker_shared::domain_matcher::normalize_domain;
 
-use crate::errors::AppError;
-use crate::models::{AdultFilterSettings, BlockedItem, BlockedType, CreateBlockedItemRequest};
-use crate::services::util::{blocked_type_to_sql, iso_now, parse_blocked_type};
+use crate::core::errors::AppError;
+use crate::core::models::{AdultFilterSettings, BlockedItem, BlockedType, CreateBlockedItemRequest};
+use crate::core::util::{blocked_type_to_sql, iso_now, parse_blocked_type};
 
 // Conversões enum ↔ string e helpers de timestamp ISO-8601 vivem em
-// `services/util.rs` (compartilhados com os outros services).
+// `core/util.rs` (compartilhados com as features).
 
 /// Adiciona item à blocklist. Normaliza (trim + lowercase), valida não-vazio,
 /// insere, traduz o erro de UNIQUE para 409.

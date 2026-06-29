@@ -59,8 +59,8 @@ recadastro. Detalhes em [API.md](API.md).
 
 ## Autenticação dual
 
-O middleware ([backend/src/middleware.rs](../backend/src/middleware.rs)) inspeciona o prefixo do
-header `Authorization: Bearer`:
+O cluster de auth ([backend/src/core/auth/](../backend/src/core/auth/) — `middleware.rs` +
+`jwt.rs` + `jwks.rs` + `device_token.rs`) inspeciona o prefixo do header `Authorization: Bearer`:
 
 - **Firebase JWT** (sem prefixo) — contas Pessoal/Pais. Valida assinatura via **JWKS do Google**
   (cacheado), checa `iss`/`aud`/`exp`, resolve `user_id` por `firebase_uid`.

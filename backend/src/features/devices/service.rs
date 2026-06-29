@@ -29,13 +29,13 @@ use rusqlite::{params, OptionalExtension};
 use tokio_rusqlite::Connection;
 use uuid::Uuid;
 
-use crate::errors::AppError;
-use crate::middleware::hash_device_token;
-use crate::models::{
+use crate::core::auth::hash_device_token;
+use crate::core::errors::AppError;
+use crate::core::models::{
     ConfirmLinkRequest, ConfirmLinkResponse, Device, GenerateLinkCodeResponse,
     RegisterDeviceRequest,
 };
-use crate::services::util::{
+use crate::core::util::{
     iso_after, iso_now, map_sqlite_error, parse_platform, platform_to_sql, ServiceError,
 };
 

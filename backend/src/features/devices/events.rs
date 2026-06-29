@@ -15,10 +15,10 @@ use rusqlite::{params, OptionalExtension};
 use tokio_rusqlite::Connection;
 use uuid::Uuid;
 
-use crate::errors::AppError;
-use crate::middleware::hash_device_token;
-use crate::models::DeviceEvent;
-use crate::services::util::iso_now;
+use crate::core::auth::hash_device_token;
+use crate::core::errors::AppError;
+use crate::core::models::DeviceEvent;
+use crate::core::util::iso_now;
 
 /// Tipos de evento aceitos. Mantido em sincronia com o `CHECK` da migration 004
 /// e com os `kind` que o app nativo Android envia.

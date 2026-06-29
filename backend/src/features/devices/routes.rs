@@ -28,14 +28,15 @@ use axum::{
     Extension, Json, Router,
 };
 
-use crate::errors::AppError;
-use crate::middleware::{AuthSource, AuthUser};
-use crate::models::{
+use crate::core::auth::{AuthSource, AuthUser};
+use crate::core::errors::AppError;
+use crate::core::models::{
     ConfirmLinkRequest, ConfirmLinkResponse, Device, DeviceEvent, GenerateLinkCodeResponse,
     RegisterDeviceRequest, SuccessResponse, TamperReportRequest,
 };
-use crate::services::{device_event_service, device_service};
 use crate::AppState;
+
+use super::{events, service};
 
 /// Rotas que exigem JWT Firebase OU Device Token (GET apenas).
 /// Montadas em `main.rs` via `.nest("/devices", ...)`.
@@ -66,7 +67,7 @@ async fn register_device(
     Extension(auth): Extension<AuthUser>,
     Json(payload): Json<RegisterDeviceRequest>,
 ) -> Result<Json<Device>, AppError> {
-    let device = device_service::register_device(&state.db, auth.user_id, payload).await?;
+    let device = service::register_device(&state.db, auth.user_id, payload).await?;
     Ok(Json(device))
 }
 
@@ -77,7 +78,7 @@ async fn list_devices(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<Vec<Device>>, AppError> {
-    let devices = device_service::list_devices(&state.db, auth.user_id).await?;
+    let devices = service::list_devices(&state.db, auth.user_id).await?;
     Ok(Json(devices))
 }
 
@@ -94,7 +95,7 @@ async fn generate_link_code(
             "Apenas contas Firebase podem gerar códigos de vinculação".into(),
         ));
     }
-    let resp = device_service::generate_link_code(&state.db, auth.user_id).await?;
+    let resp = service::generate_link_code(&state.db, auth.user_id).await?;
     Ok(Json(resp))
 }
 
@@ -107,7 +108,7 @@ async fn confirm_link(
     State(state): State<AppState>,
     Json(payload): Json<ConfirmLinkRequest>,
 ) -> Result<Json<ConfirmLinkResponse>, AppError> {
-    let resp = device_service::confirm_link(&state.db, payload).await?;
+    let resp = service::confirm_link(&state.db, payload).await?;
     Ok(Json(resp))
 }
 
@@ -125,7 +126,7 @@ async fn revoke_device(
             "Apenas contas Firebase podem revogar dispositivos vinculados".into(),
         ));
     }
-    device_service::revoke_child_device(&state.db, auth.user_id, device_id).await?;
+    service::revoke_child_device(&state.db, auth.user_id, device_id).await?;
     Ok(Json(SuccessResponse {
         message: "Dispositivo desvinculado".into(),
     }))
@@ -133,14 +134,14 @@ async fn revoke_device(
 
 /// `POST /devices/tamper` — ROTA PÚBLICA. O device do filho reporta um evento
 /// de adulteração (VPN desligada, Configs de VPN/DNS abertas). Autentica-se
-/// pelo Device Token NO CORPO (ver `device_event_service::record_tamper`), e
+/// pelo Device Token NO CORPO (ver `events::record_tamper`), e
 /// não pelo header — assim a regra read-only do middleware fica intocada.
 /// Token inválido/revogado → 401; `kind` desconhecido → 400.
 async fn report_tamper(
     State(state): State<AppState>,
     Json(payload): Json<TamperReportRequest>,
 ) -> Result<Json<SuccessResponse>, AppError> {
-    device_event_service::record_tamper(&state.db, &payload.device_token, &payload.kind).await?;
+    events::record_tamper(&state.db, &payload.device_token, &payload.kind).await?;
     Ok(Json(SuccessResponse {
         message: "Evento registrado".into(),
     }))
@@ -158,6 +159,6 @@ async fn list_events(
             "Apenas contas Firebase podem ver alertas de dispositivos".into(),
         ));
     }
-    let events = device_event_service::list_events(&state.db, auth.user_id).await?;
+    let events = events::list_events(&state.db, auth.user_id).await?;
     Ok(Json(events))
 }

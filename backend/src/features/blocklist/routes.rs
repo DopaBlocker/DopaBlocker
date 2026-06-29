@@ -23,14 +23,15 @@ use axum::{
     Extension, Json, Router,
 };
 
-use crate::errors::AppError;
-use crate::middleware::AuthUser;
-use crate::models::{
+use crate::core::auth::AuthUser;
+use crate::core::errors::AppError;
+use crate::core::models::{
     AdultFilterSettings, AdultFilterToggleRequest, BlockedItem, CreateBlockedItemRequest,
     SuccessResponse,
 };
-use crate::services::blocklist_service;
 use crate::AppState;
+
+use super::service;
 
 /// Router exposto em `main.rs` via `.nest("/blocklist", ...)`. Portanto os
 /// paths aqui são relativos a `/blocklist` (ex: `"/"` vira `/blocklist`).
@@ -53,7 +54,7 @@ async fn list_items(
     Extension(auth): Extension<AuthUser>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let etag = blocklist_service::blocklist_etag(&state.db, auth.user_id.clone()).await?;
+    let etag = service::blocklist_etag(&state.db, auth.user_id.clone()).await?;
 
     let unchanged = headers
         .get(header::IF_NONE_MATCH)
@@ -64,7 +65,7 @@ async fn list_items(
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
     }
 
-    let items = blocklist_service::list_items(&state.db, auth.user_id).await?;
+    let items = service::list_items(&state.db, auth.user_id).await?;
     Ok(([(header::ETAG, etag)], Json(items)).into_response())
 }
 
@@ -76,7 +77,7 @@ async fn add_item(
     Extension(auth): Extension<AuthUser>,
     Json(payload): Json<CreateBlockedItemRequest>,
 ) -> Result<Json<BlockedItem>, AppError> {
-    let item = blocklist_service::add_item(&state.db, auth.user_id, payload).await?;
+    let item = service::add_item(&state.db, auth.user_id, payload).await?;
     Ok(Json(item))
 }
 
@@ -88,7 +89,7 @@ async fn delete_item(
     Extension(auth): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<SuccessResponse>, AppError> {
-    blocklist_service::delete_item(&state.db, auth.user_id, id).await?;
+    service::delete_item(&state.db, auth.user_id, id).await?;
     Ok(Json(SuccessResponse {
         message: "Item removido".into(),
     }))
@@ -102,6 +103,6 @@ async fn set_adult_filter(
     Json(payload): Json<AdultFilterToggleRequest>,
 ) -> Result<Json<AdultFilterSettings>, AppError> {
     let settings =
-        blocklist_service::set_adult_filter(&state.db, auth.user_id, payload.enabled).await?;
+        service::set_adult_filter(&state.db, auth.user_id, payload.enabled).await?;
     Ok(Json(settings))
 }

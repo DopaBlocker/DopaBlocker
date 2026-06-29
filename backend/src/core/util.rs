@@ -19,8 +19,8 @@
 
 use chrono::{Duration as ChronoDuration, Utc};
 
-use crate::errors::AppError;
-use crate::models::{BlockMode, BlockedType, Platform};
+use crate::core::errors::AppError;
+use crate::core::models::{BlockMode, BlockedType, Platform};
 
 // -----------------------------------------------------------------------------
 // 1. ServiceError — erros de domínio tipados

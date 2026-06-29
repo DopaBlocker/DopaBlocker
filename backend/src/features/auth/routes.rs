@@ -5,16 +5,17 @@ use axum::{
     Extension, Json, Router,
 };
 
-use crate::errors::AppError;
-use crate::middleware::{
+use crate::core::auth::{
     extract_bearer_token, verify_firebase_jwt_token, AuthSource, AuthUser, FirebaseClaims,
 };
-use crate::models::{
+use crate::core::errors::AppError;
+use crate::core::models::{
     EmailCodeStartRequest, EmailCodeStartResponse, EmailCodeVerifyRequest, EmailCodeVerifyResponse,
     RegisterRequest, SuccessResponse, UpdateModeRequest, User,
 };
-use crate::services::{auth_service, user_service};
 use crate::AppState;
+
+use super::{email_code, service, user};
 
 pub fn public_router() -> Router<AppState> {
     Router::new()
@@ -111,7 +112,7 @@ async fn start_email_code(
     Json(payload): Json<EmailCodeStartRequest>,
 ) -> Result<Json<EmailCodeStartResponse>, AppError> {
     let response =
-        auth_service::start_email_verification(&state.db, &state.config, payload.email).await?;
+        email_code::start_email_verification(&state.db, &state.config, payload.email).await?;
     Ok(Json(response))
 }
 
@@ -120,7 +121,7 @@ async fn verify_email_code(
     Json(payload): Json<EmailCodeVerifyRequest>,
 ) -> Result<Json<EmailCodeVerifyResponse>, AppError> {
     let response =
-        auth_service::verify_email_code(&state.db, &state.config, payload.email, payload.code)
+        email_code::verify_email_code(&state.db, &state.config, payload.email, payload.code)
             .await?;
     Ok(Json(response))
 }
@@ -148,7 +149,7 @@ async fn register(
 
     // (1) Idempotência: conta já existe para este firebase_uid.
     if let Some(existing) =
-        user_service::get_user_by_firebase_uid(&state.db, claims.sub.clone()).await?
+        user::get_user_by_firebase_uid(&state.db, claims.sub.clone()).await?
     {
         return Ok(Json(existing));
     }
@@ -156,13 +157,13 @@ async fn register(
     let (email, display_name) = resolve_registration_identity(&claims, &payload)?;
 
     // (2) Reclaim: existe conta com este email, presa a outro firebase_uid.
-    if user_service::get_user_by_email(&state.db, email.clone())
+    if user::get_user_by_email(&state.db, email.clone())
         .await?
         .is_some()
     {
         let user = if requires_email_verification_code(&claims) {
             let email_verification_token = require_email_verification_token(&payload)?;
-            auth_service::reclaim_user_with_email_verification(
+            service::reclaim_user_with_email_verification(
                 &state.db,
                 &state.config,
                 claims.sub,
@@ -176,7 +177,7 @@ async fn register(
                     "Email do provedor de login nao esta verificado".into(),
                 ));
             }
-            user_service::rebind_firebase_uid(&state.db, email, claims.sub).await?
+            user::rebind_firebase_uid(&state.db, email, claims.sub).await?
         };
         return Ok(Json(user));
     }
@@ -184,7 +185,7 @@ async fn register(
     // (3) Conta nova.
     let user = if requires_email_verification_code(&claims) {
         let email_verification_token = require_email_verification_token(&payload)?;
-        auth_service::create_user_with_email_verification(
+        service::create_user_with_email_verification(
             &state.db,
             &state.config,
             claims.sub,
@@ -201,7 +202,7 @@ async fn register(
             ));
         }
 
-        user_service::create_user(&state.db, claims.sub, email, display_name, payload.mode).await?
+        user::create_user(&state.db, claims.sub, email, display_name, payload.mode).await?
     };
     Ok(Json(user))
 }
@@ -210,7 +211,7 @@ async fn login(State(state): State<AppState>, headers: HeaderMap) -> Result<Json
     let token = extract_bearer_token(&headers)?;
     let claims = verify_firebase_jwt_token(&state, &token).await?;
 
-    let user = user_service::get_user_by_firebase_uid(&state.db, claims.sub.clone())
+    let user = user::get_user_by_firebase_uid(&state.db, claims.sub.clone())
         .await?
         .ok_or_else(|| {
             AppError::NotFound("Usuario nao registrado localmente - chame /auth/register".into())
@@ -223,7 +224,7 @@ async fn me(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<User>, AppError> {
-    let user = user_service::get_user_by_id(&state.db, auth.user_id).await?;
+    let user = user::get_user_by_id(&state.db, auth.user_id).await?;
     Ok(Json(user))
 }
 
@@ -243,7 +244,7 @@ async fn delete_me(
             "Apenas o titular da conta Firebase pode excluir".into(),
         ));
     }
-    user_service::delete_user(&state.db, auth.user_id).await?;
+    user::delete_user(&state.db, auth.user_id).await?;
     Ok(Json(SuccessResponse {
         message: "Conta excluida".into(),
     }))
@@ -265,7 +266,7 @@ async fn update_me(
             "Apenas o titular da conta Firebase pode trocar o modo".into(),
         ));
     }
-    let user = user_service::update_mode(&state.db, auth.user_id, payload.mode).await?;
+    let user = user::update_mode(&state.db, auth.user_id, payload.mode).await?;
     Ok(Json(user))
 }
 
@@ -275,8 +276,8 @@ mod tests {
         fallback_display_name, provider_is_already_verified, require_email_verification_token,
         requires_email_verification_code, resolve_registration_identity,
     };
-    use crate::middleware::{FirebaseAuthInfo, FirebaseClaims};
-    use crate::models::{BlockMode, RegisterRequest};
+    use crate::core::auth::{FirebaseAuthInfo, FirebaseClaims};
+    use crate::core::models::{BlockMode, RegisterRequest};
 
     fn payload(email: &str, display_name: &str) -> RegisterRequest {
         RegisterRequest {
@@ -318,7 +319,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(crate::errors::AppError::BadRequest(_))
+            Err(crate::core::errors::AppError::BadRequest(_))
         ));
     }
 
