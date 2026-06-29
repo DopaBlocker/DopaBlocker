@@ -10,7 +10,7 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.dopablocker.dopablocker_mobile.TamperReporter
+import com.dopablocker.dopablocker_mobile.reporting.TamperReporter
 import com.dopablocker.dopablocker_mobile.accessibility.AppBlockerService
 import java.io.FileInputStream
 import java.io.FileOutputStream

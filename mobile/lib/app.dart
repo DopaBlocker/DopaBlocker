@@ -1,16 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'providers/auth_provider.dart';
-import 'routes.dart';
-import 'theme.dart';
-import 'screens/splash_screen.dart';
-import 'screens/welcome_screen.dart';
-import 'screens/login_screen.dart';
-import 'screens/child_code_screen.dart';
-import 'screens/main_shell.dart';
-import 'screens/child_blocked_screen.dart';
-import 'screens/link_device_screen.dart';
+import 'package:dopablocker_mobile/features/auth/auth.dart';
+import 'package:dopablocker_mobile/features/child/child.dart';
+import 'package:dopablocker_mobile/features/home/home.dart';
+import 'package:dopablocker_mobile/features/parental/parental.dart';
+import 'package:dopablocker_mobile/routes.dart';
+import 'package:dopablocker_mobile/shared/theme.dart';
 
 class App extends ConsumerWidget {
   const App({super.key});

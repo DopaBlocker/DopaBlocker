@@ -9,7 +9,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import com.dopablocker.dopablocker_mobile.MainActivity
-import com.dopablocker.dopablocker_mobile.TamperReporter
+import com.dopablocker.dopablocker_mobile.reporting.TamperReporter
 import com.dopablocker.dopablocker_mobile.vpn.DnsVpnService
 import java.util.concurrent.ConcurrentHashMap
 
